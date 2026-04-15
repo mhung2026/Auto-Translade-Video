@@ -1,0 +1,77 @@
+import json
+import time
+import azure.cognitiveservices.speech as speechsdk
+import config
+from src.utils import setup_logging
+
+logger = setup_logging("transcriber")
+
+
+def transcribe(audio_path: str, language: str) -> list[dict]:
+    speech_config = speechsdk.SpeechConfig(
+        subscription=config.AZURE_SPEECH_KEY,
+        region=config.AZURE_SPEECH_REGION,
+    )
+    speech_config.speech_recognition_language = language
+    speech_config.request_word_level_timestamps()
+    speech_config.output_format = speechsdk.OutputFormat.Detailed
+
+    audio_config = speechsdk.audio.AudioConfig(filename=audio_path)
+    recognizer = speechsdk.SpeechRecognizer(
+        speech_config=speech_config,
+        audio_config=audio_config,
+    )
+
+    segments = []
+    done = False
+    segment_id = 0
+
+    def on_recognized(evt):
+        nonlocal segment_id
+        result = evt.result
+        if result.reason == speechsdk.ResultReason.RecognizedSpeech and result.text.strip():
+            start = result.offset / 10_000_000
+            duration = result.duration / 10_000_000
+            end = start + duration
+            segment_id += 1
+            segment = {
+                "id": segment_id,
+                "text": result.text,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "duration": round(duration, 3),
+            }
+            segments.append(segment)
+            logger.info(f"Segment {segment_id}: [{start:.1f}s-{end:.1f}s] {result.text[:50]}...")
+
+    def on_canceled(evt):
+        nonlocal done
+        logger.warning(f"Recognition canceled: {evt.cancellation_details.reason}")
+        done = True
+
+    def on_session_stopped(evt):
+        nonlocal done
+        logger.info("Recognition session stopped.")
+        done = True
+
+    recognizer.recognized.connect(on_recognized)
+    recognizer.canceled.connect(on_canceled)
+    recognizer.session_stopped.connect(on_session_stopped)
+
+    logger.info(f"Starting transcription: {audio_path} (language: {language})")
+    recognizer.start_continuous_recognition()
+
+    while not done:
+        time.sleep(0.5)
+
+    recognizer.stop_continuous_recognition()
+    logger.info(f"Transcription complete: {len(segments)} segments")
+
+    return segments
+
+
+def save_transcript(segments: list[dict], output_path: str) -> str:
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(segments, f, ensure_ascii=False, indent=2)
+    logger.info(f"Transcript saved: {output_path}")
+    return output_path
