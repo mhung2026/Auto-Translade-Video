@@ -1,6 +1,7 @@
 import os
 import azure.cognitiveservices.speech as speechsdk
 from pydub import AudioSegment
+from xml.sax.saxutils import escape as xml_escape
 import config
 from src.utils import setup_logging
 
@@ -8,11 +9,12 @@ logger = setup_logging("synthesizer")
 
 
 def _build_ssml(text: str, voice: str, rate: str = "+0%") -> str:
+    safe_text = xml_escape(text)
     return (
         f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="ja-JP">'
         f'<voice name="{voice}">'
         f'<prosody rate="{rate}">'
-        f'{text}'
+        f'{safe_text}'
         f'</prosody>'
         f'</voice>'
         f'</speak>'

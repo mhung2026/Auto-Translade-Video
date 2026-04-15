@@ -25,6 +25,7 @@ def transcribe(audio_path: str, language: str) -> list[dict]:
     segments = []
     done = False
     segment_id = 0
+    errors = []
 
     def on_recognized(evt):
         nonlocal segment_id
@@ -46,7 +47,15 @@ def transcribe(audio_path: str, language: str) -> list[dict]:
 
     def on_canceled(evt):
         nonlocal done
-        logger.warning(f"Recognition canceled: {evt.cancellation_details.reason}")
+        details = evt.result.cancellation_details
+        if details.reason == speechsdk.CancellationReason.EndOfStream:
+            logger.info("Recognition reached end of stream.")
+        elif details.reason == speechsdk.CancellationReason.Error:
+            error_msg = f"ASR error: {details.error_details}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+        else:
+            logger.warning(f"Recognition canceled: {details.reason}")
         done = True
 
     def on_session_stopped(evt):
@@ -65,6 +74,10 @@ def transcribe(audio_path: str, language: str) -> list[dict]:
         time.sleep(0.5)
 
     recognizer.stop_continuous_recognition()
+
+    if errors:
+        raise RuntimeError(f"Transcription failed: {'; '.join(errors)}")
+
     logger.info(f"Transcription complete: {len(segments)} segments")
 
     return segments
