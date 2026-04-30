@@ -78,9 +78,82 @@ def transcribe(audio_path: str, language: str) -> list[dict]:
     if errors:
         raise RuntimeError(f"Transcription failed: {'; '.join(errors)}")
 
-    logger.info(f"Transcription complete: {len(segments)} segments")
+    logger.info(f"Transcription complete: {len(segments)} raw segments")
+
+    # Split long segments into ~MAX_SEGMENT_DURATION chunks
+    segments = split_long_segments(segments, max_duration=10.0)
+    logger.info(f"After splitting: {len(segments)} segments")
 
     return segments
+
+
+def split_long_segments(segments: list[dict], max_duration: float = 10.0) -> list[dict]:
+    """Split segments longer than max_duration into smaller ones at sentence boundaries.
+
+    Uses punctuation (. ! ? ;) to find split points. Distributes time
+    proportionally based on character count.
+    """
+    import re
+    result = []
+    new_id = 0
+
+    for seg in segments:
+        if seg["duration"] <= max_duration:
+            new_id += 1
+            result.append({**seg, "id": new_id})
+            continue
+
+        # Split text at sentence boundaries
+        sentences = re.split(r'(?<=[.!?;])\s+', seg["text"].strip())
+        if len(sentences) <= 1:
+            # No sentence boundary found, keep as-is
+            new_id += 1
+            result.append({**seg, "id": new_id})
+            continue
+
+        # Group sentences into chunks that fit within max_duration
+        total_chars = sum(len(s) for s in sentences)
+        total_duration = seg["duration"]
+        start = seg["start"]
+
+        chunk_sentences = []
+        chunk_chars = 0
+
+        for sentence in sentences:
+            estimated_chunk_duration = (chunk_chars + len(sentence)) / total_chars * total_duration
+
+            # If adding this sentence exceeds max_duration and we already have content, flush
+            if chunk_sentences and estimated_chunk_duration > max_duration:
+                chunk_duration = chunk_chars / total_chars * total_duration
+                end = round(start + chunk_duration, 3)
+                new_id += 1
+                result.append({
+                    "id": new_id,
+                    "text": " ".join(chunk_sentences),
+                    "start": round(start, 3),
+                    "end": end,
+                    "duration": round(chunk_duration, 3),
+                })
+                start = end
+                chunk_sentences = []
+                chunk_chars = 0
+
+            chunk_sentences.append(sentence)
+            chunk_chars += len(sentence)
+
+        # Flush remaining
+        if chunk_sentences:
+            end = seg["end"]
+            new_id += 1
+            result.append({
+                "id": new_id,
+                "text": " ".join(chunk_sentences),
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "duration": round(end - start, 3),
+            })
+
+    return result
 
 
 def save_transcript(segments: list[dict], output_path: str) -> str:

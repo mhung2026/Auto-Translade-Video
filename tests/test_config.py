@@ -8,7 +8,7 @@ def test_config_loads_env_vars(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-4-20250514")
     monkeypatch.setenv("TTS_VOICE", "ja-JP-KeitaNeural")
-    monkeypatch.setenv("TTS_MAX_SPEED_RATIO", "1.4")
+    monkeypatch.setenv("TTS_MAX_SPEED_RATIO", "1.3")
     monkeypatch.setenv("DEFAULT_SOURCE_LANG", "en-US")
     monkeypatch.setenv("AUDIO_SAMPLE_RATE", "16000")
     monkeypatch.setenv("OUTPUT_DIR", "./output")
@@ -22,13 +22,17 @@ def test_config_loads_env_vars(monkeypatch):
     assert config.ANTHROPIC_API_KEY == "sk-ant-test"
     assert config.ANTHROPIC_MODEL == "claude-opus-4-20250514"
     assert config.TTS_VOICE == "ja-JP-KeitaNeural"
-    assert config.TTS_MAX_SPEED_RATIO == 1.4
+    assert config.TTS_MAX_SPEED_RATIO == 1.3
     assert config.DEFAULT_SOURCE_LANG == "en-US"
     assert config.AUDIO_SAMPLE_RATE == 16000
     assert config.OUTPUT_DIR == "./output"
 
 
 def test_config_defaults(monkeypatch):
+    """When optional env vars are not set, config should use defaults."""
+    # Prevent load_dotenv from loading .env file values
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: None)
+
     monkeypatch.setenv("AZURE_SPEECH_KEY", "test-key")
     monkeypatch.setenv("AZURE_SPEECH_REGION", "japaneast")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -38,6 +42,7 @@ def test_config_defaults(monkeypatch):
     monkeypatch.delenv("DEFAULT_SOURCE_LANG", raising=False)
     monkeypatch.delenv("AUDIO_SAMPLE_RATE", raising=False)
     monkeypatch.delenv("OUTPUT_DIR", raising=False)
+    monkeypatch.delenv("VIDEO_URL", raising=False)
 
     import importlib
     import config
@@ -45,7 +50,8 @@ def test_config_defaults(monkeypatch):
 
     assert config.ANTHROPIC_MODEL == "claude-opus-4-20250514"
     assert config.TTS_VOICE == "ja-JP-KeitaNeural"
-    assert config.TTS_MAX_SPEED_RATIO == 1.4
+    assert config.TTS_MAX_SPEED_RATIO == 1.3
     assert config.DEFAULT_SOURCE_LANG == "en-US"
     assert config.AUDIO_SAMPLE_RATE == 16000
     assert config.OUTPUT_DIR == "./output"
+    assert config.VIDEO_URL == ""

@@ -1,16 +1,20 @@
+"""Translator module: EN → Vietnamese using Claude API.
+
+Translates segments with duration-aware prompting for video dubbing.
+"""
 import json
 import re
 import anthropic
 import config
 from src.utils import setup_logging
 
-logger = setup_logging("translator")
+logger = setup_logging("translator_vi")
 
 LANG_NAMES = {
     "en-US": "English",
     "en": "English",
-    "vi-VN": "Vietnamese",
-    "vi": "Vietnamese",
+    "ja-JP": "Japanese",
+    "ja": "Japanese",
 }
 
 
@@ -45,33 +49,43 @@ PREVIOUS CONTEXT (for reference only, do NOT translate these):
 """
 
     return f"""You are a translator for YouTube videos about sports, fitness, and entertainment.
-Translate {lang_name} to Japanese. This is casual content — NOT formal business or academic.
+Translate {lang_name} to Vietnamese. This is casual content — NOT formal business or academic.
 
 STYLE RULES:
-- Use casual/plain form (だ/である体), NOT polite form (です/ます体)
-- Keep it short and punchy — match the energy of the original
-- Use タメ口 (casual speech) like a fitness YouTuber would speak
-- Omit unnecessary particles and filler — be direct
+- Use friendly, conversational Vietnamese — like a YouTuber talking to their audience
+- ALWAYS use "bạn/mình/các bạn" tone — friendly and approachable. NEVER use "mày/tao" or "ông/bà"
+- Keep it natural and engaging — avoid stiff, textbook Vietnamese
+- Use common, easy-to-understand words (e.g., "bắp tay" not "cơ nhị đầu cánh tay")
+- Be direct, skip unnecessary filler words
+- Speak as if narrating/presenting to viewers, not talking to a friend privately
 
 DURATION-AWARE TRANSLATION (CRITICAL):
-- Each segment has a "duration" field in seconds — this is the time window the Japanese audio must fit into.
-- You MUST analyze the duration and choose Japanese expressions that can be spoken within that time.
-- Japanese speech is approximately 7-8 characters per second at normal speed (max 10 chars/sec at 130% speed).
-- For SHORT segments (< 4s): Use the shortest possible expression. Use 省略形, contractions, drop particles aggressively.
-- For MEDIUM segments (4-8s): Use natural casual Japanese. Prefer shorter synonyms when multiple options exist.
+- Each segment has a "duration" field in seconds — this is the time window the Vietnamese audio must fit into.
+- You MUST analyze the duration and choose Vietnamese expressions that can be spoken within that time.
+- Vietnamese speech is approximately 4-5 words per second at normal speed (max ~6 words/sec at 130% speed).
+- For SHORT segments (< 4s): Use the shortest possible expression. Drop unnecessary words aggressively.
+- For MEDIUM segments (4-8s): Use natural casual Vietnamese. Prefer shorter synonyms when options exist.
 - For LONG segments (> 8s): You have more room, but still avoid unnecessarily verbose expressions.
-- Example: "You can have big biceps" (2s) → "太い二頭筋あっても" (short) NOT "大きな上腕二頭筋を持っていても" (too long)
 - When in doubt, choose the SHORTER form. It's easier to slow down TTS than to speed it up beyond 130%.
 
 REQUIREMENTS:
-- Return ONLY a JSON array: [{{"id": 1, "text_jp": "..."}}]
+- Return ONLY a JSON array: [{{"id": 1, "text_vi": "..."}}]
 - No explanation, no markdown, no extra text
 {context_section}
 SEGMENTS TO TRANSLATE:
 {segments_json}"""
 
 
-def translate_segments(segments: list[dict], source_lang: str) -> list[dict]:
+def translate_segments_vi(segments: list[dict], source_lang: str) -> list[dict]:
+    """Translate segments to Vietnamese using Claude API.
+
+    Args:
+        segments: List of dicts with id, text, start, end, duration
+        source_lang: Source language code (e.g., "en-US")
+
+    Returns:
+        Same segments list with text_vi field added
+    """
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     batches = _split_into_batches(segments, batch_size=25)
 
@@ -83,11 +97,10 @@ def translate_segments(segments: list[dict], source_lang: str) -> list[dict]:
     translations = {}
 
     for batch_idx, batch in enumerate(batches):
-        # Include 2-3 segments from previous batch as context (for batches after the first)
         context_segments = []
         if batch_idx > 0 and len(batches) > 1:
             prev_batch = batches[batch_idx - 1]
-            context_segments = prev_batch[-3:]  # Last 3 segments of previous batch
+            context_segments = prev_batch[-3:]
 
         logger.info(
             f"Processing batch {batch_idx + 1}/{len(batches)} "
@@ -104,7 +117,7 @@ def translate_segments(segments: list[dict], source_lang: str) -> list[dict]:
 
         response_text = response.content[0].text.strip()
 
-        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        # Strip markdown code fences
         fence_match = re.search(r'```(?:json)?\s*\n(.*?)```', response_text, re.DOTALL)
         if fence_match:
             response_text = fence_match.group(1).strip()
@@ -117,17 +130,17 @@ def translate_segments(segments: list[dict], source_lang: str) -> list[dict]:
             continue
 
         for item in translated:
-            if isinstance(item, dict) and "id" in item and "text_jp" in item:
-                translations[item["id"]] = item["text_jp"]
+            if isinstance(item, dict) and "id" in item and "text_vi" in item:
+                translations[item["id"]] = item["text_vi"]
             else:
                 logger.warning(f"Skipping malformed translation item: {item}")
 
     for seg in segments:
         if seg["id"] in translations:
-            seg["text_jp"] = translations[seg["id"]]
+            seg["text_vi"] = translations[seg["id"]]
         else:
             logger.warning(f"Missing translation for segment {seg['id']}")
-            seg["text_jp"] = seg["text"]
+            seg["text_vi"] = seg["text"]
 
     logger.info(f"Translation complete: {len(translations)}/{len(segments)} segments translated")
     return segments

@@ -1,0 +1,20 @@
+[
+  {
+    "id": 12,
+    "video_url": "https://www.youtube.com/watch?v=WVQ0lPiWsHQ",
+    "voice_type": "male",
+    "status": "success",
+    "output_folder": "20260417105127_vi",
+    "segments": 88,
+    "duration_original": 644.571,
+    "duration_vi": 432.896,
+    "processing_time": 1000.8
+  },
+  {
+    "id": 13,
+    "video_url": "https://www.youtube.com/watch?v=NiMc2PoTiXo",
+    "voice_type": "male",
+    "status": "failed",
+    "error": "Transcription failed: ASR error: Connection was closed by the remote host. Error code: 1007. Error details: Quota exceeded. Cid:  SessionId: 586b574835ce4fa0ab278335121898fc"
+  }
+]

@@ -12,3 +12,12 @@ venv/
 *.mp4
 *.mkv
 *.webm
+
+# Generated YouTube transcripts
+scripts/
+
+# Local-only folders
+Auto Translade video/
+
+# Local input lists (may contain user-specific URLs)
+video_links.txt
