@@ -20,6 +20,7 @@ from src.transcriber import transcribe, save_transcript
 from src.translator import translate_segments
 from src.synthesizer import synthesize_segment
 from src.audio_merger import merge_segments
+from src.vocal_separator import separate_vocals
 from src.video_merger import merge_video
 from src.srt_generator import generate_srt
 from src.content_generator import generate_content
@@ -29,8 +30,12 @@ logger = setup_logging("pipeline")
 LANG_MAP = {
     "en": "en-US",
     "vi": "vi-VN",
+    "zh": "zh-CN",
     "en-US": "en-US",
     "vi-VN": "vi-VN",
+    "zh-CN": "zh-CN",
+    "zh-HK": "zh-HK",
+    "zh-TW": "zh-TW",
 }
 
 
@@ -99,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-lang",
         default=config.DEFAULT_SOURCE_LANG,
-        help=f"Source language: en, vi, en-US, vi-VN (default: {config.DEFAULT_SOURCE_LANG})",
+        help=f"Source language: en, vi, zh, en-US, vi-VN, zh-CN, zh-HK, zh-TW (default: {config.DEFAULT_SOURCE_LANG})",
     )
     parser.add_argument(
         "--voice",
@@ -115,6 +120,12 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default=config.OUTPUT_DIR,
         help=f"Output directory (default: {config.OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--no-bg-music",
+        action="store_true",
+        help="Disable Demucs vocal separation. The dubbed video plays JP narration on a "
+             "silent base (legacy behavior); original music and SFX are dropped.",
     )
 
     args = parser.parse_args()
@@ -137,6 +148,7 @@ def run_pipeline(
     voice: str,
     skip_video: bool,
     output_dir: str,
+    no_bg_music: bool = False,
 ) -> dict:
     start_time = time.time()
 
@@ -164,6 +176,18 @@ def run_pipeline(
     logger.info("STEP 2: Extracting audio")
     audio_path = os.path.join(work_dir, "original_audio.wav")
     extract_audio(video_path, audio_path)
+
+    # --- Step 2.5: Separate vocals from music/SFX (Demucs) ---
+    no_vocals_path: str | None = None
+    if not no_bg_music:
+        logger.info("=" * 60)
+        logger.info("STEP 2.5: Separating vocals from original audio (Demucs)")
+        sep = separate_vocals(audio_path, work_dir)
+        no_vocals_path = sep.get("no_vocals")
+        if no_vocals_path is None:
+            logger.warning(
+                "Vocal separation unavailable — dubbed audio will use a silent base"
+            )
 
     # --- Step 3: Speech-to-Text (ASR) ---
     logger.info("=" * 60)
@@ -204,7 +228,10 @@ def run_pipeline(
     logger.info("STEP 6: Merging audio segments")
     total_duration = max(seg["end"] for seg in segments) + 1.0 if segments else 0
     merged_audio_path = os.path.join(work_dir, "audio_jp_full.wav")
-    merge_segments(segments, seg_dir, merged_audio_path, total_duration)
+    merge_segments(
+        segments, seg_dir, merged_audio_path, total_duration,
+        background_path=no_vocals_path,
+    )
 
     # --- Step 7: Merge video (optional) ---
     dubbed_video_path = None
@@ -229,7 +256,7 @@ def run_pipeline(
                 image_model_id=config.IMAGE_MODEL_ID,
                 content_model_id=config.CONTENT_MODEL_ID,
             )
-            logger.info(f"  Thumbnails: {len(content_result['thumbnails'])} generated")
+            logger.info(f"  Thumbnail prompts: {content_result.get('thumbnail_prompts_file', 'N/A')}")
             logger.info(f"  Metadata: {content_result.get('metadata_file', 'N/A')}")
         except Exception as e:
             logger.error(f"Content generation failed (non-fatal): {e}")
@@ -296,6 +323,7 @@ def main():
             voice=args.voice,
             skip_video=args.skip_video,
             output_dir=args.output_dir,
+            no_bg_music=args.no_bg_music,
         )
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)

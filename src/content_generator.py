@@ -201,19 +201,17 @@ Respond in this exact JSON format (no markdown code blocks):
     return metadata
 
 
-def generate_thumbnails(
+def _build_thumbnail_prompts(
     script_original: str,
     script_translated: str,
     target_lang: str,
-    original_thumbnail_path: str | None,
-    output_dir: str,
-    api_key: str,
-    model_id: str,
 ) -> list[str]:
-    """Generate 2 thumbnail images using Gemini image model.
+    """Build the 2 thumbnail-generation prompt strings.
 
-    Takes plain text scripts (not segments JSON).
-    Returns list of saved thumbnail file paths.
+    Pulled out of generate_thumbnails() so callers can save the prompts to
+    disk and feed them into an external image generator (or any tool) without
+    actually paying the Gemini image API. The prompts here are byte-identical
+    to what generate_thumbnails() would have sent to the model.
     """
     if target_lang == "vi-VN":
         lang_name = "tiếng Việt"
@@ -222,25 +220,10 @@ def generate_thumbnails(
         lang_name = "日本語"
         lang_code = "Japanese"
 
-    # Only need a short summary for thumbnail prompt
     orig_short = script_original[:400]
     trans_short = script_translated[:400]
 
-    client = genai.Client(api_key=api_key)
-    saved_paths = []
-
-    # Load original thumbnail as reference if available
-    ref_image_part = None
-    if original_thumbnail_path and os.path.exists(original_thumbnail_path):
-        with open(original_thumbnail_path, "rb") as f:
-            image_bytes = f.read()
-        ref_image_part = types.Part.from_bytes(
-            data=image_bytes,
-            mime_type="image/jpeg",
-        )
-        logger.info("Using original thumbnail as reference for generation")
-
-    thumbnail_prompts = [
+    return [
         f"""Create a professional YouTube thumbnail image (16:9 aspect ratio, 1280x720).
 
 The video is about:
@@ -273,6 +256,42 @@ Requirements:
 {lang_code} context:
 {trans_short}""",
     ]
+
+
+def generate_thumbnails(
+    script_original: str,
+    script_translated: str,
+    target_lang: str,
+    original_thumbnail_path: str | None,
+    output_dir: str,
+    api_key: str,
+    model_id: str,
+) -> list[str]:
+    """Generate 2 thumbnail images using Gemini image model.
+
+    Takes plain text scripts (not segments JSON).
+    Returns list of saved thumbnail file paths.
+    """
+    client = genai.Client(api_key=api_key)
+    saved_paths = []
+
+    # Load original thumbnail as reference if available
+    ref_image_part = None
+    if original_thumbnail_path and os.path.exists(original_thumbnail_path):
+        with open(original_thumbnail_path, "rb") as f:
+            image_bytes = f.read()
+        ref_image_part = types.Part.from_bytes(
+            data=image_bytes,
+            mime_type="image/jpeg",
+        )
+        logger.info("Using original thumbnail as reference for generation")
+
+    thumbnail_prompts = _build_thumbnail_prompts(
+        script_original, script_translated, target_lang
+    )
+
+    # Resolve language label for the reference-image preface
+    lang_code = "Vietnamese" if target_lang == "vi-VN" else "Japanese"
 
     for i, prompt in enumerate(thumbnail_prompts):
         try:
@@ -364,21 +383,38 @@ def generate_content(
     )
 
     # Step 2: Fetch original thumbnail
-    original_thumb = None
-    if source_url:
-        original_thumb = fetch_original_thumbnail(source_url, output_dir)
+    # --- DISABLED: only needed when actually generating images via Gemini ---
+    # original_thumb = None
+    # if source_url:
+    #     original_thumb = fetch_original_thumbnail(source_url, output_dir)
 
-    # Step 3: Generate thumbnails (using clean text)
-    logger.info("Generating thumbnail images...")
-    result["thumbnails"] = generate_thumbnails(
+    # Step 3: Build thumbnail prompts and save to file (image API skipped)
+    # To re-enable Gemini image generation, uncomment the generate_thumbnails block
+    # below and the fetch_original_thumbnail block above.
+    logger.info("Building thumbnail prompts (Gemini image API disabled)")
+    thumbnail_prompts = _build_thumbnail_prompts(
         script_original=script_original,
         script_translated=script_translated,
         target_lang=target_lang,
-        original_thumbnail_path=original_thumb,
-        output_dir=output_dir,
-        api_key=api_key,
-        model_id=image_model_id,
     )
+    prompts_path = os.path.join(output_dir, "thumbnail_prompts.txt")
+    with open(prompts_path, "w", encoding="utf-8") as f:
+        for i, prompt in enumerate(thumbnail_prompts, 1):
+            f.write(f"=== THUMBNAIL PROMPT {i} ===\n\n{prompt}\n\n")
+    logger.info(f"Thumbnail prompts saved: {prompts_path}")
+    result["thumbnail_prompts_file"] = prompts_path
+
+    # --- DISABLED: Gemini image API call ---
+    # logger.info("Generating thumbnail images...")
+    # result["thumbnails"] = generate_thumbnails(
+    #     script_original=script_original,
+    #     script_translated=script_translated,
+    #     target_lang=target_lang,
+    #     original_thumbnail_path=original_thumb,
+    #     output_dir=output_dir,
+    #     api_key=api_key,
+    #     model_id=image_model_id,
+    # )
 
     # Step 4: Generate YouTube metadata (using clean text)
     logger.info("Generating YouTube metadata (title, description, hashtags)...")
@@ -402,7 +438,12 @@ def generate_content(
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(f"TITLE:\n{meta.get('title', '')}\n\n")
         f.write(f"DESCRIPTION:\n{meta.get('description', '')}\n\n")
-        f.write(f"HASHTAGS:\n{' '.join(meta.get('hashtags', []))}\n")
+        f.write(f"HASHTAGS:\n{' '.join(meta.get('hashtags', []))}\n\n")
+        f.write("=" * 60 + "\n")
+        f.write("THUMBNAIL PROMPTS (paste into your image generator)\n")
+        f.write("=" * 60 + "\n\n")
+        for i, prompt in enumerate(thumbnail_prompts, 1):
+            f.write(f"--- Prompt {i} ---\n{prompt}\n\n")
     logger.info(f"YouTube post content saved: {txt_path}")
 
     return result

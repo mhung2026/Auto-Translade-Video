@@ -20,7 +20,8 @@ from src.audio_extractor import extract_audio
 from src.transcriber import transcribe, save_transcript
 from src.translator_vi import translate_segments_vi
 from src.synthesizer_vi import synthesize_segment_vi
-from src.audio_merger import merge_segments
+from src.audio_merger import merge_segments, fit_segments_to_timeline
+from src.vocal_separator import separate_vocals
 from src.video_merger import merge_video
 from src.srt_generator import generate_srt
 from src.content_generator import generate_content
@@ -30,8 +31,12 @@ logger = setup_logging("pipeline_vi")
 LANG_MAP = {
     "en": "en-US",
     "ja": "ja-JP",
+    "zh": "zh-CN",
     "en-US": "en-US",
     "ja-JP": "ja-JP",
+    "zh-CN": "zh-CN",
+    "zh-HK": "zh-HK",
+    "zh-TW": "zh-TW",
 }
 
 
@@ -126,7 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-lang",
         default=config.DEFAULT_SOURCE_LANG,
-        help=f"Source language: en, ja, en-US, ja-JP (default: {config.DEFAULT_SOURCE_LANG})",
+        help=f"Source language: en, ja, zh, en-US, ja-JP, zh-CN, zh-HK, zh-TW (default: {config.DEFAULT_SOURCE_LANG})",
     )
     parser.add_argument(
         "--voice",
@@ -144,10 +149,28 @@ def parse_args() -> argparse.Namespace:
         default=_get_default_vi_output_dir(),
         help=f"Output directory (default: ANKO Project/VN)",
     )
+    parser.add_argument(
+        "--resume",
+        metavar="WORK_DIR",
+        help="Resume an existing work directory. Steps whose outputs already exist are skipped.",
+    )
+    parser.add_argument(
+        "--no-api-translate",
+        action="store_true",
+        help="Don't call Anthropic API at the translation step. If transcript_vi.json is missing, "
+             "the pipeline writes a hint file and exits — you then run the translate-video-segments "
+             "skill in Claude Code (uses your subscription tokens) and re-run with --resume.",
+    )
+    parser.add_argument(
+        "--no-bg-music",
+        action="store_true",
+        help="Disable Demucs vocal separation. The dubbed video plays VI narration on a "
+             "silent base (legacy behavior); original music and SFX are dropped.",
+    )
 
     args = parser.parse_args()
 
-    if not args.url and not args.file:
+    if not args.url and not args.file and not args.resume:
         if config.VIETNAMESE_VIDEO_URL:
             args.url = config.VIETNAMESE_VIDEO_URL
             logger.info(f"Using VIETNAMESE_VIDEO_URL from .env: {args.url}")
@@ -155,7 +178,7 @@ def parse_args() -> argparse.Namespace:
             args.url = config.VIDEO_URL
             logger.info(f"Using VIDEO_URL from .env: {args.url}")
         else:
-            parser.error("No video specified. Use --url, --file, or set VIETNAMESE_VIDEO_URL in .env")
+            parser.error("No video specified. Use --url, --file, --resume, or set VIETNAMESE_VIDEO_URL in .env")
 
     # Resolve voice ID: CLI flag > .env Voice_type > interactive prompt
     if args.voice == "male":
@@ -174,6 +197,84 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def _resolve_video(work_dir: str, url: str | None, file_path: str | None) -> str:
+    """Locate the source video for this work_dir.
+
+    Resume-friendly: if a prior run already downloaded/copied the source video
+    into work_dir, reuse it instead of re-downloading. Skips any files whose
+    name matches a pipeline output (dubbed_video*.mp4) so we don't mistake the
+    rendered result for the source.
+
+    If --file is passed, that takes precedence — useful when the user keeps
+    the source outside work_dir.
+    """
+    if file_path:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Video file not found: {file_path}")
+        return file_path
+
+    video_exts = (".mp4", ".mkv", ".webm", ".mov", ".avi")
+    output_prefixes = ("dubbed_video",)
+    for f in sorted(os.listdir(work_dir)):
+        lower = f.lower()
+        if not lower.endswith(video_exts):
+            continue
+        if any(lower.startswith(prefix) for prefix in output_prefixes):
+            continue
+        cached = os.path.join(work_dir, f)
+        logger.info(f"Reusing existing video: {cached}")
+        return cached
+
+    if url:
+        return download_video(url, work_dir)
+
+    raise RuntimeError(
+        f"No source video found in {work_dir} and no --url/--file given. "
+        "Pass --file <path> on resume if the original is outside work_dir."
+    )
+
+
+def _write_translate_pending_hint(work_dir: str, target_lang: str, source_lang: str) -> str:
+    """Write TRANSLATE_PENDING.txt with instructions for using the skill."""
+    target_name = "Vietnamese" if target_lang == "vi-VN" else "Japanese"
+    out_field = "text_vi" if target_lang == "vi-VN" else "text_jp"
+    out_file = "transcript_vi.json" if target_lang == "vi-VN" else "transcript_jp.json"
+
+    hint_path = os.path.join(work_dir, "TRANSLATE_PENDING.txt")
+    with open(hint_path, "w", encoding="utf-8") as f:
+        f.write(
+            f"""TRANSLATION STEP PENDING
+========================
+
+Source language : {source_lang}
+Target language : {target_lang} ({target_name})
+Work directory  : {work_dir}
+
+The pipeline stopped at Step 4 because --no-api-translate was passed and
+{out_file} does not exist yet.
+
+To translate using your Claude Code subscription tokens (instead of paying
+the Anthropic API), do this in Claude Code:
+
+  1. Open this repo in Claude Code (you're probably already there).
+  2. Type or say:
+       Translate the transcript at {work_dir} to {target_name}.
+     (or invoke the skill directly: /translate-video-segments)
+
+  3. The translate-video-segments skill will read transcript_original.json
+     and write {out_file} in this directory, with a "{out_field}" field
+     added to every segment.
+
+  4. Once {out_file} exists, resume the pipeline with:
+       python pipeline_vi.py --resume "{work_dir}" --voice <male|female>
+
+The pipeline will detect the translated file, skip Step 4, and continue
+with TTS, audio fitting, video merge, and metadata generation.
+"""
+        )
+    return hint_path
+
+
 def run_pipeline_vi(
     url: str | None,
     file_path: str | None,
@@ -181,76 +282,129 @@ def run_pipeline_vi(
     voice_id: str,
     skip_video: bool,
     output_dir: str,
+    resume_dir: str | None = None,
+    no_api_translate: bool = False,
+    no_bg_music: bool = False,
 ) -> dict:
     start_time = time.time()
 
     lang_code = LANG_MAP.get(source_lang, source_lang)
     logger.info(f"Source language: {lang_code} → Vietnamese")
 
-    # Create output folder named by timestamp
-    folder_name = datetime.now().strftime("%Y%m%d%H%M%S") + "_vi"
-    work_dir = ensure_dir(os.path.join(output_dir, folder_name))
-    logger.info(f"Output folder: {work_dir}")
+    # Resume an existing work_dir or create a new timestamped one
+    if resume_dir:
+        if not os.path.isdir(resume_dir):
+            raise FileNotFoundError(f"Resume directory not found: {resume_dir}")
+        work_dir = resume_dir
+        folder_name = os.path.basename(os.path.normpath(work_dir))
+        logger.info(f"Resuming work directory: {work_dir}")
+    else:
+        folder_name = datetime.now().strftime("%Y%m%d%H%M%S") + "_vi"
+        work_dir = ensure_dir(os.path.join(output_dir, folder_name))
+        logger.info(f"Output folder: {work_dir}")
+
+    transcript_orig_path = os.path.join(work_dir, "transcript_original.json")
+    transcript_vi_path = os.path.join(work_dir, "transcript_vi.json")
+    audio_path = os.path.join(work_dir, "original_audio.wav")
 
     # --- Step 1: Download or use local file ---
     logger.info("=" * 60)
     logger.info("STEP 1: Acquiring video")
-    if url:
-        video_path = download_video(url, work_dir)
-    else:
-        video_path = file_path
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Video file not found: {video_path}")
+    video_path = _resolve_video(work_dir, url, file_path)
     logger.info(f"Video: {video_path}")
 
     # --- Step 2: Extract audio ---
     logger.info("=" * 60)
     logger.info("STEP 2: Extracting audio")
-    audio_path = os.path.join(work_dir, "original_audio.wav")
-    extract_audio(video_path, audio_path)
+    if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+        logger.info(f"Reusing existing audio: {audio_path}")
+    else:
+        extract_audio(video_path, audio_path)
+
+    # --- Step 2.5: Separate vocals from music/SFX (Demucs) ---
+    no_vocals_path: str | None = None
+    if not no_bg_music:
+        logger.info("=" * 60)
+        logger.info("STEP 2.5: Separating vocals from original audio (Demucs)")
+        sep = separate_vocals(audio_path, work_dir)
+        no_vocals_path = sep.get("no_vocals")
+        if no_vocals_path is None:
+            logger.warning(
+                "Vocal separation unavailable — dubbed audio will use a silent base"
+            )
 
     # --- Step 3: Speech-to-Text (ASR) ---
     logger.info("=" * 60)
     logger.info("STEP 3: Transcribing audio (ASR)")
-    segments = transcribe(audio_path, lang_code)
-    save_transcript(segments, os.path.join(work_dir, "transcript_original.json"))
-    generate_srt(segments, os.path.join(work_dir, "transcript_original.srt"), text_field="text")
-    logger.info(f"Transcribed {len(segments)} segments")
+    if os.path.exists(transcript_orig_path):
+        logger.info(f"Reusing existing transcript: {transcript_orig_path}")
+        with open(transcript_orig_path, encoding="utf-8") as f:
+            segments = json.load(f)
+        logger.info(f"Loaded {len(segments)} segments from cache")
+    else:
+        segments = transcribe(audio_path, lang_code)
+        save_transcript(segments, transcript_orig_path)
+        generate_srt(segments, os.path.join(work_dir, "transcript_original.srt"), text_field="text")
+        logger.info(f"Transcribed {len(segments)} segments")
 
     # --- Step 4: Translate to Vietnamese ---
     logger.info("=" * 60)
     logger.info("STEP 4: Translating to Vietnamese")
-    segments = translate_segments_vi(segments, lang_code)
-    save_transcript(segments, os.path.join(work_dir, "transcript_vi.json"))
-    generate_srt(segments, os.path.join(work_dir, "transcript_vi.srt"), text_field="text_vi")
+    if os.path.exists(transcript_vi_path):
+        logger.info(f"Reusing existing translation: {transcript_vi_path}")
+        with open(transcript_vi_path, encoding="utf-8") as f:
+            segments = json.load(f)
+    elif no_api_translate:
+        _write_translate_pending_hint(work_dir, "vi-VN", source_lang)
+        logger.warning("Translation pending — see TRANSLATE_PENDING.txt in work dir")
+        return {"status": "translate_pending", "work_dir": work_dir}
+    else:
+        segments = translate_segments_vi(segments, lang_code)
+        save_transcript(segments, transcript_vi_path)
+        generate_srt(segments, os.path.join(work_dir, "transcript_vi.srt"), text_field="text_vi")
 
     # --- Step 5: TTS for each segment (LucyLab API) ---
     logger.info("=" * 60)
     logger.info("STEP 5: Synthesizing Vietnamese audio (LucyLab TTS)")
     seg_dir = ensure_dir(os.path.join(work_dir, "segments"))
     tts_results = []
+    from pydub import AudioSegment as _ASeg
+
     for seg in segments:
         seg_path = os.path.join(seg_dir, f"seg_{seg['id']:03d}.wav")
-        result = synthesize_segment_vi(
-            text_vi=seg["text_vi"],
-            output_path=seg_path,
-            target_duration=seg["duration"],
-            voice_id=voice_id,
-        )
+        if os.path.exists(seg_path) and os.path.getsize(seg_path) > 0:
+            cached = _ASeg.from_wav(seg_path)
+            result = {
+                "path": seg_path,
+                "actual_duration": round(len(cached) / 1000.0, 3),
+                "speed_adjusted": False,
+                "rate_applied": "cached",
+            }
+            logger.info(
+                f"  Segment {seg['id']}: cached ({result['actual_duration']:.1f}s, "
+                f"target {seg['duration']:.1f}s)"
+            )
+        else:
+            result = synthesize_segment_vi(
+                text_vi=seg["text_vi"],
+                output_path=seg_path,
+                target_duration=seg["duration"],
+                voice_id=voice_id,
+            )
+            logger.info(
+                f"  Segment {seg['id']}: {result['actual_duration']:.1f}s "
+                f"(target: {seg['duration']:.1f}s, speed: {result['rate_applied']})"
+            )
         tts_results.append(result)
-        logger.info(
-            f"  Segment {seg['id']}: {result['actual_duration']:.1f}s "
-            f"(target: {seg['duration']:.1f}s, speed: {result['rate_applied']})"
-        )
 
-    # --- Step 6: Slow down segments + Merge audio ---
+    # --- Step 6: Slow down + Fit-to-timeline + Merge audio ---
     logger.info("=" * 60)
     slow_factor = config.AUDIO_SLOW_FACTOR
     total_duration = max(seg["end"] for seg in segments) + 1.0 if segments else 0
 
     if slow_factor < 1.0:
         slow_pct = round((1.0 - slow_factor) * 100)
-        logger.info(f"STEP 6: Slowing segments {slow_pct}% (atempo={slow_factor}) + Merging audio")
+        logger.info(f"STEP 6a: Slowing segments {slow_pct}% (atempo={slow_factor})")
         slow_dir = ensure_dir(os.path.join(work_dir, f"segments_slow{slow_pct}"))
         for seg in segments:
             src = os.path.join(seg_dir, f"seg_{seg['id']:03d}.wav")
@@ -260,12 +414,24 @@ def run_pipeline_vi(
                     ["ffmpeg", "-y", "-i", src, "-filter:a", f"atempo={slow_factor}", dst],
                     capture_output=True, text=True,
                 )
-        merged_audio_path = os.path.join(work_dir, "audio_vi_full.wav")
-        merge_segments(segments, slow_dir, merged_audio_path, total_duration)
+        pre_fit_dir = slow_dir
     else:
-        logger.info("STEP 6: Merging audio segments")
-        merged_audio_path = os.path.join(work_dir, "audio_vi_full.wav")
-        merge_segments(segments, seg_dir, merged_audio_path, total_duration)
+        pre_fit_dir = seg_dir
+
+    logger.info("STEP 6b: Fitting segments to timeline (avoid overlap)")
+    fit_dir = ensure_dir(os.path.join(work_dir, "segments_fit"))
+    fit_adjustments = fit_segments_to_timeline(segments, pre_fit_dir, fit_dir)
+
+    fit_log_path = os.path.join(work_dir, "fit_adjustments.json")
+    with open(fit_log_path, "w", encoding="utf-8") as f:
+        json.dump(fit_adjustments, f, ensure_ascii=False, indent=2)
+
+    logger.info("STEP 6c: Merging audio segments")
+    merged_audio_path = os.path.join(work_dir, "audio_vi_full.wav")
+    merge_segments(
+        segments, fit_dir, merged_audio_path, total_duration,
+        background_path=no_vocals_path,
+    )
 
     # --- Step 7: Merge video (optional) ---
     dubbed_video_path = None
@@ -290,7 +456,7 @@ def run_pipeline_vi(
                 image_model_id=config.IMAGE_MODEL_ID,
                 content_model_id=config.CONTENT_MODEL_ID,
             )
-            logger.info(f"  Thumbnails: {len(content_result['thumbnails'])} generated")
+            logger.info(f"  Thumbnail prompts: {content_result.get('thumbnail_prompts_file', 'N/A')}")
             logger.info(f"  Metadata: {content_result.get('metadata_file', 'N/A')}")
         except Exception as e:
             logger.error(f"Content generation failed (non-fatal): {e}")
@@ -358,6 +524,9 @@ def main():
             voice_id=args.voice_id,
             skip_video=args.skip_video,
             output_dir=args.output_dir,
+            resume_dir=args.resume,
+            no_api_translate=args.no_api_translate,
+            no_bg_music=args.no_bg_music,
         )
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)

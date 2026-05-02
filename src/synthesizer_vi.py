@@ -15,7 +15,7 @@ from src.utils import setup_logging
 logger = setup_logging("synthesizer_vi")
 
 POLL_INTERVAL = 2  # seconds between status checks
-POLL_TIMEOUT = 120  # max seconds to wait for TTS completion
+POLL_TIMEOUT = int(os.getenv("LUCYLAB_POLL_TIMEOUT", "300"))  # max seconds to wait for TTS completion
 
 
 def _call_lucylab(method: str, input_data: dict) -> dict:

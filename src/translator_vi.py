@@ -15,6 +15,10 @@ LANG_NAMES = {
     "en": "English",
     "ja-JP": "Japanese",
     "ja": "Japanese",
+    "zh-CN": "Chinese (Mandarin, Simplified)",
+    "zh-HK": "Chinese (Cantonese, Traditional)",
+    "zh-TW": "Chinese (Mandarin, Traditional)",
+    "zh": "Chinese",
 }
 
 
@@ -48,6 +52,23 @@ PREVIOUS CONTEXT (for reference only, do NOT translate these):
 
 """
 
+    is_chinese = source_lang.startswith("zh")
+    chinese_note = """
+CHINESE → VIETNAMESE SPECIFICS:
+- Use Sino-Vietnamese (Hán-Việt) words ONLY when they are everyday Vietnamese
+  (e.g. "tài phiệt", "kiểm sát viên", "phim truyền hình") — avoid academic-sounding
+  ones ("nhật báo", "tự sát" → prefer "báo chí", "tự tử" in casual review tone).
+- Korean drama / pop names: keep the Korean Romanization the Vietnamese audience
+  knows (朱志勋 → Joo Ji-hoon, 河智苑 → Ha Ji-won), NOT pinyin and NOT Vietnamese
+  phonetic spelling. If you can't tell, transliterate the pinyin (e.g. 方太谢
+  → Fang Tai-xie). Keep brand names in original (Mercedes, not "xe Mẹc").
+- For Cantonese (zh-HK) sources, treat ASR text as Mandarin equivalent for translation.
+- Drop Chinese discourse particles (啊/呢/嘛/吧) — Vietnamese has different filler
+  patterns; use "nha", "đó", "ấy" only when adding genuine warmth.
+- Beware of false friends: 工作 = công việc (NOT công tác), 检察官 = kiểm sát viên
+  (NOT công tố — though công tố is OK in news context), 老婆 = vợ (casual, NOT phu nhân).
+""" if is_chinese else ""
+
     return f"""You are a translator for YouTube videos about sports, fitness, and entertainment.
 Translate {lang_name} to Vietnamese. This is casual content — NOT formal business or academic.
 
@@ -58,7 +79,7 @@ STYLE RULES:
 - Use common, easy-to-understand words (e.g., "bắp tay" not "cơ nhị đầu cánh tay")
 - Be direct, skip unnecessary filler words
 - Speak as if narrating/presenting to viewers, not talking to a friend privately
-
+{chinese_note}
 DURATION-AWARE TRANSLATION (CRITICAL):
 - Each segment has a "duration" field in seconds — this is the time window the Vietnamese audio must fit into.
 - You MUST analyze the duration and choose Vietnamese expressions that can be spoken within that time.

@@ -11,6 +11,10 @@ LANG_NAMES = {
     "en": "English",
     "vi-VN": "Vietnamese",
     "vi": "Vietnamese",
+    "zh-CN": "Chinese (Mandarin, Simplified)",
+    "zh-HK": "Chinese (Cantonese, Traditional)",
+    "zh-TW": "Chinese (Mandarin, Traditional)",
+    "zh": "Chinese",
 }
 
 
@@ -44,6 +48,18 @@ PREVIOUS CONTEXT (for reference only, do NOT translate these):
 
 """
 
+    is_chinese = source_lang.startswith("zh")
+    chinese_note = """
+CHINESE → JAPANESE SPECIFICS:
+- Many 漢字 are shared between Chinese and Japanese — leverage them when natural,
+  but use the JAPANESE reading/meaning, not Chinese pronunciation.
+- Beware of false friends: 手紙 (letter in JP, toilet paper in ZH), 勉強 (study in JP, force in ZH).
+  Always pick the JAPANESE meaning that fits the context.
+- Chinese is more compact per character — Japanese translation is often LONGER.
+  Be aggressive about choosing short Japanese expressions to fit the duration.
+- For Cantonese (zh-HK) sources, treat ASR text as written Mandarin equivalent.
+""" if is_chinese else ""
+
     return f"""You are a translator for YouTube videos about sports, fitness, and entertainment.
 Translate {lang_name} to Japanese. This is casual content — NOT formal business or academic.
 
@@ -52,7 +68,7 @@ STYLE RULES:
 - Keep it short and punchy — match the energy of the original
 - Use タメ口 (casual speech) like a fitness YouTuber would speak
 - Omit unnecessary particles and filler — be direct
-
+{chinese_note}
 DURATION-AWARE TRANSLATION (CRITICAL):
 - Each segment has a "duration" field in seconds — this is the time window the Japanese audio must fit into.
 - You MUST analyze the duration and choose Japanese expressions that can be spoken within that time.

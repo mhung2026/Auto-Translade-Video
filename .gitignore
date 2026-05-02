@@ -21,3 +21,11 @@ Auto Translade video/
 
 # Local input lists (may contain user-specific URLs)
 video_links.txt
+
+# Local-only artifacts and logs
+.claude/
+.playwright-mcp/
+downloads/
+input/
+*.log
+www.douyin.com_cookies.txt
