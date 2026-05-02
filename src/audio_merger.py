@@ -130,10 +130,20 @@ def merge_segments(
     output_path: str,
     total_duration: float,
     background_path: str | None = None,
+    background_gain_db: float = 0.0,
 ) -> str:
+    """Mix per-segment dub audio onto a background track.
+
+    ``background_path`` may point to a clean instrumental (Demucs ``no_vocals``)
+    or to the unmodified ``original_audio.wav``; in the latter case set
+    ``background_gain_db`` to a negative value (e.g. -12.0 ≈ 25% volume) so the
+    original speech sits under the new narration instead of competing with it.
+    """
     total_ms = int(total_duration * 1000)
-    merged = _load_background(background_path, total_ms) if background_path else \
-        AudioSegment.silent(duration=total_ms)
+    if background_path:
+        merged = _load_background(background_path, total_ms, background_gain_db)
+    else:
+        merged = AudioSegment.silent(duration=total_ms)
 
     for seg in segments:
         seg_file = os.path.join(segment_dir, f"seg_{seg['id']:03d}.wav")
@@ -148,7 +158,11 @@ def merge_segments(
         logger.debug(f"Placed segment {seg['id']} at {seg['start']:.1f}s")
 
     merged.export(output_path, format="wav")
-    bg_label = "with BGM" if background_path else "silent base"
+    if background_path:
+        gain_note = f" (gain {background_gain_db:+.1f} dB)" if background_gain_db else ""
+        bg_label = f"with BGM{gain_note}"
+    else:
+        bg_label = "silent base"
     logger.info(
         f"Audio merged ({bg_label}): {output_path} "
         f"({len(segments)} segments, {total_duration:.1f}s)"
@@ -156,8 +170,10 @@ def merge_segments(
     return output_path
 
 
-def _load_background(background_path: str, total_ms: int) -> AudioSegment:
-    """Load a background track and pad/truncate it to ``total_ms``.
+def _load_background(
+    background_path: str, total_ms: int, gain_db: float = 0.0
+) -> AudioSegment:
+    """Load a background track, apply gain, and pad/truncate it to ``total_ms``.
 
     Falls back to silent base if the file is missing or unreadable so a
     pipeline failure in vocal separation never aborts the merge.
@@ -171,6 +187,9 @@ def _load_background(background_path: str, total_ms: int) -> AudioSegment:
     except Exception as exc:
         logger.warning(f"Failed to load background {background_path}: {exc}; using silent base")
         return AudioSegment.silent(duration=total_ms)
+
+    if gain_db != 0.0:
+        bg = bg.apply_gain(gain_db)
 
     if len(bg) < total_ms:
         bg = bg + AudioSegment.silent(duration=total_ms - len(bg))

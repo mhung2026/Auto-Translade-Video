@@ -162,13 +162,32 @@ def parse_args() -> argparse.Namespace:
              "skill in Claude Code (uses your subscription tokens) and re-run with --resume.",
     )
     parser.add_argument(
+        "--bg-mode",
+        choices=["demucs", "duck", "none"],
+        default="demucs",
+        help="How to handle the original audio under the VI narration: "
+             "'demucs' (default) runs vocal separation so only music/SFX remain — "
+             "highest quality, ~7 min CPU per video. "
+             "'duck' lowers the entire original_audio.wav by --bg-duck-db (default -12) "
+             "and overlays VI on top — fast (no Demucs), original speech audible faintly. "
+             "'none' merges VI on a silent base — legacy behavior, no original audio.",
+    )
+    parser.add_argument(
+        "--bg-duck-db",
+        type=float,
+        default=-12.0,
+        help="Gain (dB) applied to original audio in 'duck' mode. -12 dB ≈ 25%% volume "
+             "(default), -6 dB ≈ 50%%, -20 dB ≈ 10%%. Ignored unless --bg-mode=duck.",
+    )
+    parser.add_argument(
         "--no-bg-music",
         action="store_true",
-        help="Disable Demucs vocal separation. The dubbed video plays VI narration on a "
-             "silent base (legacy behavior); original music and SFX are dropped.",
+        help="Deprecated alias for --bg-mode=none. Kept for backwards compatibility.",
     )
 
     args = parser.parse_args()
+    if args.no_bg_music:
+        args.bg_mode = "none"
 
     if not args.url and not args.file and not args.resume:
         if config.VIETNAMESE_VIDEO_URL:
@@ -284,7 +303,8 @@ def run_pipeline_vi(
     output_dir: str,
     resume_dir: str | None = None,
     no_api_translate: bool = False,
-    no_bg_music: bool = False,
+    bg_mode: str = "demucs",
+    bg_duck_db: float = -12.0,
 ) -> dict:
     start_time = time.time()
 
@@ -321,17 +341,28 @@ def run_pipeline_vi(
     else:
         extract_audio(video_path, audio_path)
 
-    # --- Step 2.5: Separate vocals from music/SFX (Demucs) ---
-    no_vocals_path: str | None = None
-    if not no_bg_music:
+    # --- Step 2.5: Resolve background track for the dub merge ---
+    background_path: str | None = None
+    background_gain_db: float = 0.0
+    if bg_mode == "demucs":
         logger.info("=" * 60)
         logger.info("STEP 2.5: Separating vocals from original audio (Demucs)")
         sep = separate_vocals(audio_path, work_dir)
-        no_vocals_path = sep.get("no_vocals")
-        if no_vocals_path is None:
+        background_path = sep.get("no_vocals")
+        if background_path is None:
             logger.warning(
                 "Vocal separation unavailable — dubbed audio will use a silent base"
             )
+    elif bg_mode == "duck":
+        logger.info("=" * 60)
+        logger.info(
+            f"STEP 2.5: Ducking original audio by {bg_duck_db:+.1f} dB "
+            "(no vocal separation)"
+        )
+        background_path = audio_path
+        background_gain_db = bg_duck_db
+    elif bg_mode == "none":
+        logger.info("STEP 2.5 skipped: --bg-mode=none, dubbed audio uses silent base")
 
     # --- Step 3: Speech-to-Text (ASR) ---
     logger.info("=" * 60)
@@ -430,7 +461,8 @@ def run_pipeline_vi(
     merged_audio_path = os.path.join(work_dir, "audio_vi_full.wav")
     merge_segments(
         segments, fit_dir, merged_audio_path, total_duration,
-        background_path=no_vocals_path,
+        background_path=background_path,
+        background_gain_db=background_gain_db,
     )
 
     # --- Step 7: Merge video (optional) ---
@@ -526,7 +558,8 @@ def main():
             output_dir=args.output_dir,
             resume_dir=args.resume,
             no_api_translate=args.no_api_translate,
-            no_bg_music=args.no_bg_music,
+            bg_mode=args.bg_mode,
+            bg_duck_db=args.bg_duck_db,
         )
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)

@@ -122,13 +122,29 @@ def parse_args() -> argparse.Namespace:
         help=f"Output directory (default: {config.OUTPUT_DIR})",
     )
     parser.add_argument(
+        "--bg-mode",
+        choices=["demucs", "duck", "none"],
+        default="demucs",
+        help="How to handle the original audio under the JP narration: "
+             "'demucs' (default) runs vocal separation; 'duck' lowers original_audio.wav "
+             "by --bg-duck-db (default -12) and overlays JP — fast, no Demucs; "
+             "'none' uses a silent base.",
+    )
+    parser.add_argument(
+        "--bg-duck-db",
+        type=float,
+        default=-12.0,
+        help="Gain (dB) applied to original audio in 'duck' mode (default -12 dB ≈ 25%%).",
+    )
+    parser.add_argument(
         "--no-bg-music",
         action="store_true",
-        help="Disable Demucs vocal separation. The dubbed video plays JP narration on a "
-             "silent base (legacy behavior); original music and SFX are dropped.",
+        help="Deprecated alias for --bg-mode=none.",
     )
 
     args = parser.parse_args()
+    if args.no_bg_music:
+        args.bg_mode = "none"
 
     # Fallback: if no --url and no --file, read VIDEO_URL from .env
     if not args.url and not args.file:
@@ -148,7 +164,8 @@ def run_pipeline(
     voice: str,
     skip_video: bool,
     output_dir: str,
-    no_bg_music: bool = False,
+    bg_mode: str = "demucs",
+    bg_duck_db: float = -12.0,
 ) -> dict:
     start_time = time.time()
 
@@ -177,17 +194,28 @@ def run_pipeline(
     audio_path = os.path.join(work_dir, "original_audio.wav")
     extract_audio(video_path, audio_path)
 
-    # --- Step 2.5: Separate vocals from music/SFX (Demucs) ---
-    no_vocals_path: str | None = None
-    if not no_bg_music:
+    # --- Step 2.5: Resolve background track for the dub merge ---
+    background_path: str | None = None
+    background_gain_db: float = 0.0
+    if bg_mode == "demucs":
         logger.info("=" * 60)
         logger.info("STEP 2.5: Separating vocals from original audio (Demucs)")
         sep = separate_vocals(audio_path, work_dir)
-        no_vocals_path = sep.get("no_vocals")
-        if no_vocals_path is None:
+        background_path = sep.get("no_vocals")
+        if background_path is None:
             logger.warning(
                 "Vocal separation unavailable — dubbed audio will use a silent base"
             )
+    elif bg_mode == "duck":
+        logger.info("=" * 60)
+        logger.info(
+            f"STEP 2.5: Ducking original audio by {bg_duck_db:+.1f} dB "
+            "(no vocal separation)"
+        )
+        background_path = audio_path
+        background_gain_db = bg_duck_db
+    elif bg_mode == "none":
+        logger.info("STEP 2.5 skipped: --bg-mode=none, dubbed audio uses silent base")
 
     # --- Step 3: Speech-to-Text (ASR) ---
     logger.info("=" * 60)
@@ -230,7 +258,8 @@ def run_pipeline(
     merged_audio_path = os.path.join(work_dir, "audio_jp_full.wav")
     merge_segments(
         segments, seg_dir, merged_audio_path, total_duration,
-        background_path=no_vocals_path,
+        background_path=background_path,
+        background_gain_db=background_gain_db,
     )
 
     # --- Step 7: Merge video (optional) ---
@@ -323,7 +352,8 @@ def main():
             voice=args.voice,
             skip_video=args.skip_video,
             output_dir=args.output_dir,
-            no_bg_music=args.no_bg_music,
+            bg_mode=args.bg_mode,
+            bg_duck_db=args.bg_duck_db,
         )
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)
