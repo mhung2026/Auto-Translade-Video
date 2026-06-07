@@ -80,3 +80,45 @@ def test_save_then_load_youtube_credentials_roundtrip(tmp_path, monkeypatch):
     loaded = auth.load_youtube_credentials_dict()
     assert loaded["refresh_token"] == "1//fake_refresh"
     assert loaded["client_id"] == "fake.apps.googleusercontent.com"
+
+
+def test_publish_unknown_platform_returns_failure(tmp_path):
+    from src.publishers import publish
+    results = publish(
+        work_dir=str(tmp_path),
+        video_path=str(tmp_path / "video.mp4"),
+        platforms=["myspace"],
+    )
+    assert "myspace" in results
+    assert results["myspace"].success is False
+    assert results["myspace"].error == "unknown_platform"
+
+
+def test_publish_runs_each_platform_independently(tmp_path, monkeypatch):
+    from src.publishers import base, publish
+
+    call_log = []
+
+    def fake_yt(work_dir, video_path, public=False):
+        call_log.append(("youtube", work_dir, public))
+        return base.PublishResult(platform="youtube", success=True, video_id="A", url="u")
+
+    def fake_fb(work_dir, video_path, public=False):
+        call_log.append(("facebook", work_dir, public))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("src.publishers.youtube.upload", fake_yt)
+    monkeypatch.setattr("src.publishers.facebook.upload", fake_fb, raising=False)
+
+    results = publish(
+        work_dir=str(tmp_path),
+        video_path=str(tmp_path / "v.mp4"),
+        platforms=["youtube", "facebook"],
+        public=True,
+    )
+
+    assert results["youtube"].success is True
+    assert results["facebook"].success is False
+    assert results["facebook"].error == "exception"
+    assert "boom" in results["facebook"].error_message
+    assert [c[0] for c in call_log] == ["youtube", "facebook"]
