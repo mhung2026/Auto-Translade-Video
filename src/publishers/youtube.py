@@ -6,11 +6,14 @@ CLI:
 """
 import argparse
 import json
+import logging
 import os
 import sys
 
 from src.publishers import auth
 from src.publishers.base import PublishResult
+
+logger = logging.getLogger(__name__)
 
 
 def login() -> None:
@@ -150,13 +153,13 @@ def upload(work_dir: str, video_path: str, public: bool = False) -> PublishResul
     if thumb := _find_thumbnail(work_dir):
         try:
             youtube.thumbnails().set(videoId=video_id, media_body=thumb).execute()
-        except HttpError:
-            pass
+        except Exception as e:
+            logger.warning("Thumbnail upload failed (non-fatal): %s", e)
     if srt := _find_vi_srt(work_dir):
         try:
             _upload_caption(youtube, video_id, srt, "vi")
-        except HttpError:
-            pass
+        except Exception as e:
+            logger.warning("Caption upload failed (non-fatal): %s", e)
 
     return PublishResult(
         platform="youtube", success=True,
