@@ -465,14 +465,39 @@ def run_pipeline_vi(
         merge_video(video_path, merged_audio_path, dubbed_video_path)
         _notify(progress_callback, "merge_video", "ok", video_path=dubbed_video_path)
 
-    # --- Step 8: Generate thumbnails + YouTube metadata ---
-    content_result = {"thumbnails": [], "metadata": {}}
-    if config.GOOGLE_API_KEY:
-        logger.info("=" * 60)
-        logger.info("STEP 8: Generating thumbnails & YouTube metadata")
-        _notify(progress_callback, "metadata", "running")
+    # --- Step 8: Generate metadata + thumbnail via Claude Code subprocess ---
+    # Claude path (subscription only, no API cost) → falls back to Gemini if
+    # claude CLI is not available AND google_api_key is set.
+    logger.info("=" * 60)
+    logger.info("STEP 8: Generating YouTube metadata + thumbnail")
+    _notify(progress_callback, "metadata", "running")
+    metadata_ok = False
+    try:
+        from src.content_via_claude import (
+            generate_metadata_via_claude,
+            generate_thumbnail_via_claude,
+            ContentError,
+        )
         try:
-            content_result = generate_content(
+            generate_metadata_via_claude(work_dir)
+            logger.info("  [OK] Metadata via Claude")
+            metadata_ok = True
+        except ContentError as e:
+            logger.warning(f"  Metadata via Claude failed: {e}")
+        try:
+            generate_thumbnail_via_claude(work_dir)
+            logger.info("  [OK] Thumbnail via Claude + Higgsfield")
+        except ContentError as e:
+            logger.warning(f"  Thumbnail via Claude failed (non-fatal): {e}")
+    except Exception as e:
+        logger.error(f"Claude content generation crashed: {e}")
+
+    # Fallback: if Claude didn't produce metadata and Gemini key is available,
+    # use legacy Gemini path so the upload still has title/description.
+    if not metadata_ok and config.GOOGLE_API_KEY:
+        logger.info("  Falling back to Gemini for metadata")
+        try:
+            generate_content(
                 segments=segments,
                 target_lang="vi-VN",
                 source_url=url,
@@ -481,14 +506,14 @@ def run_pipeline_vi(
                 image_model_id=config.IMAGE_MODEL_ID,
                 content_model_id=config.CONTENT_MODEL_ID,
             )
-            logger.info(f"  Thumbnail prompts: {content_result.get('thumbnail_prompts_file', 'N/A')}")
-            logger.info(f"  Metadata: {content_result.get('metadata_file', 'N/A')}")
-            _notify(progress_callback, "metadata", "ok")
+            metadata_ok = True
         except Exception as e:
-            logger.error(f"Content generation failed (non-fatal): {e}")
-            _notify(progress_callback, "metadata", "fail", error=str(e)[:120])
+            logger.error(f"Gemini fallback also failed: {e}")
+
+    if metadata_ok:
+        _notify(progress_callback, "metadata", "ok")
     else:
-        logger.info("Skipping thumbnail/metadata generation (GOOGLE_API_KEY not set)")
+        _notify(progress_callback, "metadata", "fail", error="metadata generation failed")
 
     # --- Step 9: Publish to YouTube / Facebook ---
     if upload_platforms and dubbed_video_path:
