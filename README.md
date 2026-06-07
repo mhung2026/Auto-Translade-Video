@@ -211,6 +211,70 @@ STEP 9: Publishing to youtube, facebook (privacy=private/draft)
 
 Re-run với `--resume <work_dir> --upload facebook` để retry riêng platform fail.
 
+## Telegram bot — remote-triggered dub (server 24/7)
+
+Cho phép bạn gửi link Douyin/YouTube/TikTok qua Telegram → bot tự download → dub → upload public lên YouTube + Facebook Page → báo từng bước thành công/thất bại về Telegram.
+
+### Yêu cầu
+
+- Tài khoản Claude trả phí (Pro/Max) + Claude Code CLI cài trên server (cho bước dịch tự động qua skill)
+- Bot token Telegram (tạo qua [@BotFather](https://t.me/BotFather))
+- User ID Telegram của bạn (hỏi [@userinfobot](https://t.me/userinfobot))
+
+### Setup
+
+1. Tạo bot Telegram qua @BotFather, copy token vào `.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=123:abc...
+   TELEGRAM_WHITELIST_USER_ID=12345678
+   ```
+2. Cài `claude` CLI trên server và đăng nhập Claude Pro/Max.
+3. Khởi chạy:
+   ```bash
+   python -m src.telegram_bot
+   ```
+4. Trên Telegram, gửi `/start` cho bot để xác nhận hoạt động.
+
+### Sử dụng
+
+- Gửi 1 URL bất kỳ → bot reply `Job #N queued`, sau đó edit liên tục 1 message để báo từng bước.
+- `/status` — xem queue + job đang chạy
+- `/cancel` — cancel job hiện tại (đợi step hiện tại kết thúc)
+
+Mặc định: source language = `zh`, voice = `male`, bg-mode = `duck -15dB`, upload = `youtube + facebook`, privacy = `public`.
+
+### Chạy 24/7
+
+**Windows (NSSM, recommended):**
+```
+nssm install AutoTranslateBot
+  Path:               C:\Path\To\Python\python.exe
+  Arguments:          -m src.telegram_bot
+  Startup directory:  C:\...\Auto-Translade-video
+  I/O:                stdout/stderr → C:\Logs\bot.log
+  Exit actions:       Restart (5s delay)
+nssm start AutoTranslateBot
+```
+
+**Linux (systemd):**
+```bash
+sudo cp deploy/auto-translate-bot.service /etc/systemd/system/
+sudo systemctl enable --now auto-translate-bot
+sudo journalctl -u auto-translate-bot -f      # tail log
+```
+
+### Hành vi khi fail
+
+Job fail giữa chừng → bot edit message:
+```
+💥 Job #N FAILED at step `tts`
+Error: LucyLabError: TTS completed but no audio URL
+Work dir: `output/VN/20260608121530_vi`
+Resume: `python pipeline_vi.py --resume output/VN/20260608121530_vi`
+```
+
+Bot KHÔNG tự retry. Job tiếp theo trong queue vẫn chạy. Bạn SSH vào server và chạy lệnh `--resume` thủ công khi rảnh.
+
 ## License
 
 MIT.
