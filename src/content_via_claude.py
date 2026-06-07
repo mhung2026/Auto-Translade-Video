@@ -72,8 +72,10 @@ HASHTAGS RULES:
 OUTPUT:
 - Write ONLY the JSON file at the path above.
 - Do NOT print the JSON to stdout.
-- Do NOT run any other commands.
+- Do NOT run any other commands or skills.
+- Do NOT call any MCP tool.
 - Do NOT ask follow-up questions.
+- Do this work yourself directly. Stop as soon as the file is written.
 - If transcript_vi.json is missing or malformed, exit with a clear error message.
 """
 

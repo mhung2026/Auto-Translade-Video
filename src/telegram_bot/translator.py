@@ -35,11 +35,26 @@ async def translate_via_claude(
         logger.info(f"transcript_vi.json already exists at {transcript_vi}, skipping Claude")
         return
 
+    # Inline instructions (do NOT invoke the translate-video-segments skill —
+    # skills can hang in headless `-p` mode if they expect user confirmation).
     prompt = (
-        f"Use the translate-video-segments skill to translate the transcript at "
-        f"{work_dir} from Chinese to Vietnamese. Read transcript_original.json, "
-        f"write transcript_vi.json with a text_vi field added to each segment. "
-        f"Do not run any other commands or ask follow-up questions."
+        f"Read the JSON file at {work_dir}\\transcript_original.json. "
+        f"It is an array of segments with fields: id, text, start, end, duration. "
+        f"Auto-detect the source language of `text` and translate each segment "
+        f"to Vietnamese, adding the translation as a new `text_vi` field. "
+        f"Write the result to {work_dir}\\transcript_vi.json with the same shape "
+        f"(preserve every original field, append text_vi).\n\n"
+        f"Vietnamese style rules:\n"
+        f"- YouTube-creator tone: bạn / mình / các bạn (no mày/tao).\n"
+        f"- Drop filler words and discourse particles (啊/呢/嘛/吧 etc.).\n"
+        f"- Keep brand names original; use pinyin/romanization for character names.\n"
+        f"- For bleeped segments (text contains only `**` or punctuation), use a "
+        f"short exclamation like \"Hả.\" or \"Á.\" — never empty or just \"...\".\n"
+        f"- Match each Vietnamese segment to the original duration "
+        f"(~12 chars/sec Vietnamese is natural).\n\n"
+        f"IMPORTANT: Do this work yourself directly — DO NOT invoke any skill, "
+        f"DO NOT call any MCP tool, DO NOT ask any follow-up questions. "
+        f"Just read the input file, write the output file, and stop."
     )
     cmd = ["claude", "-p", prompt, "--output-format", "text"]
     logger.info(f"Spawning Claude Code in cwd={cwd}")
