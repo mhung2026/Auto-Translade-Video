@@ -173,6 +173,18 @@ def parse_args() -> argparse.Namespace:
              "(default), -6 dB ≈ 50%%, -20 dB ≈ 10%%. Ignored unless --bg-mode=duck.",
     )
     parser.add_argument(
+        "--upload",
+        metavar="PLATFORMS",
+        default="",
+        help="Comma-separated platforms to publish to after dub (e.g. 'youtube,facebook'). "
+             "Default: don't upload.",
+    )
+    parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Upload as PUBLIC. Default: private/draft (review manually before publishing).",
+    )
+    parser.add_argument(
         "--no-bg-music",
         action="store_true",
         help="Deprecated alias for --bg-mode=none. Kept for backwards compatibility.",
@@ -256,6 +268,8 @@ def run_pipeline_vi(
     resume_dir: str | None = None,
     bg_mode: str = "demucs",
     bg_duck_db: float = -12.0,
+    upload_platforms: list[str] | None = None,
+    public: bool = False,
 ) -> dict:
     start_time = time.time()
 
@@ -442,6 +456,26 @@ def run_pipeline_vi(
     else:
         logger.info("Skipping thumbnail/metadata generation (GOOGLE_API_KEY not set)")
 
+    # --- Step 9: Publish to YouTube / Facebook ---
+    if upload_platforms and dubbed_video_path:
+        logger.info("=" * 60)
+        logger.info(f"STEP 9: Publishing to {', '.join(upload_platforms)} "
+                    f"(privacy={'public' if public else 'private/draft'})")
+        from src.publishers import publish
+        publish_results = publish(
+            work_dir=work_dir,
+            video_path=dubbed_video_path,
+            platforms=upload_platforms,
+            public=public,
+        )
+        for platform_name, res in publish_results.items():
+            if res.success:
+                logger.info(f"  [OK] {platform_name}: {res.url}")
+            else:
+                logger.error(f"  [FAIL] {platform_name}: {res.error} - {res.error_message}")
+    elif upload_platforms and not dubbed_video_path:
+        logger.warning("STEP 9 skipped: --upload requested but --skip-video produced no video file")
+
     # --- Generate report ---
     elapsed = time.time() - start_time
     report = {
@@ -506,6 +540,8 @@ def main():
             resume_dir=args.resume,
             bg_mode=args.bg_mode,
             bg_duck_db=args.bg_duck_db,
+            upload_platforms=[p.strip() for p in args.upload.split(",") if p.strip()],
+            public=args.public,
         )
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)
