@@ -7,6 +7,8 @@ Requires:
 """
 import asyncio
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -42,12 +44,23 @@ async def translate_via_claude(
     cmd = ["claude", "-p", prompt, "--output-format", "text"]
     logger.info(f"Spawning Claude Code in cwd={cwd}")
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    # On Windows the `claude` CLI installs as `claude.cmd` (npm wrapper),
+    # which create_subprocess_exec can't execute (CreateProcess only finds .exe).
+    # Go through the shell so PATHEXT finds the .cmd file.
+    if sys.platform == "win32":
+        proc = await asyncio.create_subprocess_shell(
+            subprocess.list2cmdline(cmd),
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
     try:
         stdout, stderr = await asyncio.wait_for(

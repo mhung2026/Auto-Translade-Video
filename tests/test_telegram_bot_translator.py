@@ -7,6 +7,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _force_unix_platform(monkeypatch):
+    """Tests assume the create_subprocess_exec branch.
+
+    On Windows production code routes through create_subprocess_shell to
+    handle the `claude.cmd` npm wrapper; pretend we are on Linux during tests
+    so the assertions remain stable regardless of host OS.
+    """
+    monkeypatch.setattr("sys.platform", "linux")
+
+
 def _make_workdir(tmp_path: Path, with_transcript_vi: bool = False) -> Path:
     wd = tmp_path / "wd"
     wd.mkdir()

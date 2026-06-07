@@ -18,6 +18,7 @@ Requires:
 """
 import argparse
 import logging
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -120,15 +121,24 @@ def _run_claude(prompt: str, cwd: Path, timeout_sec: int) -> None:
     """Sync wrapper around `claude -p`. Raises ContentError on failure."""
     cmd = ["claude", "-p", prompt, "--output-format", "text"]
     logger.info(f"Spawning claude -p (cwd={cwd}, timeout={timeout_sec}s)")
+    # On Windows, claude is installed as claude.cmd by npm; subprocess.run
+    # via CreateProcess doesn't find .cmd extensions automatically. Route
+    # through the shell so PATHEXT resolves the wrapper.
+    use_shell = sys.platform == "win32"
+    if use_shell:
+        invocation = subprocess.list2cmdline(cmd)
+    else:
+        invocation = cmd
     try:
         result = subprocess.run(
-            cmd,
+            invocation,
             cwd=str(cwd),
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout_sec,
+            shell=use_shell,
         )
     except subprocess.TimeoutExpired:
         raise ContentError(f"claude -p timed out after {timeout_sec}s")
