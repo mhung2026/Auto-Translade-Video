@@ -471,6 +471,7 @@ def run_pipeline_vi(
     logger.info("=" * 60)
     logger.info("STEP 8: Generating YouTube metadata + thumbnail")
     _notify(progress_callback, "metadata", "running")
+    content_result = {"thumbnails": [], "metadata": {}}
     metadata_ok = False
     try:
         from src.content_via_claude import (
