@@ -121,7 +121,13 @@ CONSTRAINTS:
 
 def _run_claude(prompt: str, cwd: Path, timeout_sec: int) -> None:
     """Sync wrapper around `claude -p`. Raises ContentError on failure."""
-    cmd = ["claude", "-p", prompt, "--output-format", "text"]
+    # --dangerously-skip-permissions: needed for headless mode so claude
+    # auto-approves file writes / tool calls without waiting for confirmation.
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "text",
+        "--dangerously-skip-permissions",
+    ]
     logger.info(f"Spawning claude -p (cwd={cwd}, timeout={timeout_sec}s)")
     # On Windows, claude is installed as claude.cmd by npm; subprocess.run
     # via CreateProcess doesn't find .cmd extensions automatically. Route
@@ -141,6 +147,7 @@ def _run_claude(prompt: str, cwd: Path, timeout_sec: int) -> None:
             errors="replace",
             timeout=timeout_sec,
             shell=use_shell,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         raise ContentError(f"claude -p timed out after {timeout_sec}s")

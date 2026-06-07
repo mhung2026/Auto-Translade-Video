@@ -56,16 +56,25 @@ async def translate_via_claude(
         f"DO NOT call any MCP tool, DO NOT ask any follow-up questions. "
         f"Just read the input file, write the output file, and stop."
     )
-    cmd = ["claude", "-p", prompt, "--output-format", "text"]
+    # --dangerously-skip-permissions: auto-approve every tool call so the
+    # subprocess never blocks waiting for a permission prompt that no human
+    # can answer in headless mode.
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "text",
+        "--dangerously-skip-permissions",
+    ]
     logger.info(f"Spawning Claude Code in cwd={cwd}")
 
     # On Windows the `claude` CLI installs as `claude.cmd` (npm wrapper),
     # which create_subprocess_exec can't execute (CreateProcess only finds .exe).
     # Go through the shell so PATHEXT finds the .cmd file.
+    # stdin=DEVNULL: prevent claude from blocking on stdin in headless mode.
     if sys.platform == "win32":
         proc = await asyncio.create_subprocess_shell(
             subprocess.list2cmdline(cmd),
             cwd=str(cwd),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -73,6 +82,7 @@ async def translate_via_claude(
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(cwd),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
