@@ -101,6 +101,15 @@ class Worker:
             )
 
         from pipeline_vi import run_pipeline_vi
+        import config
+
+        # voice_id is the actual LucyLab userVoiceId, not the string "male" —
+        # resolve from .env.
+        voice_id = config.VIETNAMESE_VOICEID_MALE
+        if not voice_id:
+            raise RuntimeError(
+                "VIETNAMESE_VOICEID_MALE is not set in .env — bot cannot synthesize"
+            )
 
         # --- Phase 1: download → ASR → write TRANSLATE_PENDING ---
         result = await asyncio.to_thread(
@@ -108,7 +117,7 @@ class Worker:
             url=job.url,
             file_path=None,
             source_lang="zh",
-            voice_id="male",
+            voice_id=voice_id,
             skip_video=False,
             output_dir=str(self.work_dir_base),
             bg_mode="duck",
@@ -134,7 +143,7 @@ class Worker:
                 url=None,
                 file_path=None,
                 source_lang="zh",
-                voice_id="male",
+                voice_id=voice_id,
                 skip_video=False,
                 output_dir=str(self.work_dir_base),
                 resume_dir=str(job.work_dir),

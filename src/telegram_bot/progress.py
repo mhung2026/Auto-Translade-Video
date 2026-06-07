@@ -97,4 +97,8 @@ class ProgressReporter:
         except TimedOut:
             pass
         except Exception as e:
+            # "Message is not modified" happens when our throttling fires for
+            # a step that produced no visible change — harmless, just noise.
+            if "not modified" in str(e).lower():
+                return
             logger.warning(f"Failed to edit progress message: {e}")
