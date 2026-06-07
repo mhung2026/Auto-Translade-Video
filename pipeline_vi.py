@@ -40,6 +40,19 @@ LANG_MAP = {
 }
 
 
+def _notify(callback, step: str, status: str, **info) -> None:
+    """Emit a progress notification, swallowing any callback error.
+
+    Used by the Telegram bot worker; CLI mode passes callback=None.
+    """
+    if callback is None:
+        return
+    try:
+        callback(step, status, **info)
+    except Exception:
+        logger.exception("progress_callback raised, ignoring")
+
+
 def _build_timing_guide(report: dict, segments: list[dict], tts_results: list[dict]) -> dict:
     """Build a timing guide JSON for Vietnamese audio."""
     guide = {
@@ -270,6 +283,7 @@ def run_pipeline_vi(
     bg_duck_db: float = -12.0,
     upload_platforms: list[str] | None = None,
     public: bool = False,
+    progress_callback=None,
 ) -> dict:
     start_time = time.time()
 
@@ -295,16 +309,21 @@ def run_pipeline_vi(
     # --- Step 1: Download or use local file ---
     logger.info("=" * 60)
     logger.info("STEP 1: Acquiring video")
+    _notify(progress_callback, "download", "running")
     video_path = _resolve_video(work_dir, url, file_path)
     logger.info(f"Video: {video_path}")
+    _notify(progress_callback, "download", "ok", video_path=video_path)
 
     # --- Step 2: Extract audio ---
     logger.info("=" * 60)
     logger.info("STEP 2: Extracting audio")
     if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
         logger.info(f"Reusing existing audio: {audio_path}")
+        _notify(progress_callback, "extract_audio", "ok")
     else:
+        _notify(progress_callback, "extract_audio", "running")
         extract_audio(video_path, audio_path)
+        _notify(progress_callback, "extract_audio", "ok")
 
     # --- Step 2.5: Resolve background track for the dub merge ---
     background_path: str | None = None
@@ -312,12 +331,14 @@ def run_pipeline_vi(
     if bg_mode == "demucs":
         logger.info("=" * 60)
         logger.info("STEP 2.5: Separating vocals from original audio (Demucs)")
+        _notify(progress_callback, "vocal_sep", "running")
         sep = separate_vocals(audio_path, work_dir)
         background_path = sep.get("no_vocals")
         if background_path is None:
             logger.warning(
                 "Vocal separation unavailable — dubbed audio will use a silent base"
             )
+        _notify(progress_callback, "vocal_sep", "ok")
     elif bg_mode == "duck":
         logger.info("=" * 60)
         logger.info(
@@ -337,11 +358,14 @@ def run_pipeline_vi(
         with open(transcript_orig_path, encoding="utf-8") as f:
             segments = json.load(f)
         logger.info(f"Loaded {len(segments)} segments from cache")
+        _notify(progress_callback, "asr", "ok", n_segments=len(segments))
     else:
+        _notify(progress_callback, "asr", "running")
         segments = transcribe(audio_path, lang_code)
         save_transcript(segments, transcript_orig_path)
         generate_srt(segments, os.path.join(work_dir, "transcript_original.srt"), text_field="text")
         logger.info(f"Transcribed {len(segments)} segments")
+        _notify(progress_callback, "asr", "ok", n_segments=len(segments))
 
     # --- Step 4: Translate to Vietnamese ---
     logger.info("=" * 60)
@@ -353,11 +377,13 @@ def run_pipeline_vi(
     else:
         _write_translate_pending_hint(work_dir, "vi-VN", source_lang)
         logger.warning("Translation pending — see TRANSLATE_PENDING.txt in work dir")
+        _notify(progress_callback, "translate_pending", "ok", work_dir=work_dir)
         return {"status": "translate_pending", "work_dir": work_dir}
 
     # --- Step 5: TTS for each segment (LucyLab API) ---
     logger.info("=" * 60)
     logger.info("STEP 5: Synthesizing Vietnamese audio (LucyLab TTS)")
+    _notify(progress_callback, "tts", "running")
     seg_dir = ensure_dir(os.path.join(work_dir, "segments"))
     tts_results = []
     from pydub import AudioSegment as _ASeg
@@ -388,9 +414,11 @@ def run_pipeline_vi(
                 f"(target: {seg['duration']:.1f}s, speed: {result['rate_applied']})"
             )
         tts_results.append(result)
+    _notify(progress_callback, "tts", "ok", n_segments=len(tts_results))
 
     # --- Step 6: Slow down + Fit-to-timeline + Merge audio ---
     logger.info("=" * 60)
+    _notify(progress_callback, "merge_audio", "running")
     slow_factor = config.AUDIO_SLOW_FACTOR
     total_duration = max(seg["end"] for seg in segments) + 1.0 if segments else 0
 
@@ -425,20 +453,24 @@ def run_pipeline_vi(
         background_path=background_path,
         background_gain_db=background_gain_db,
     )
+    _notify(progress_callback, "merge_audio", "ok")
 
     # --- Step 7: Merge video (optional) ---
     dubbed_video_path = None
     if not skip_video:
         logger.info("=" * 60)
         logger.info("STEP 7: Creating dubbed video")
+        _notify(progress_callback, "merge_video", "running")
         dubbed_video_path = os.path.join(work_dir, "dubbed_video.mp4")
         merge_video(video_path, merged_audio_path, dubbed_video_path)
+        _notify(progress_callback, "merge_video", "ok", video_path=dubbed_video_path)
 
     # --- Step 8: Generate thumbnails + YouTube metadata ---
     content_result = {"thumbnails": [], "metadata": {}}
     if config.GOOGLE_API_KEY:
         logger.info("=" * 60)
         logger.info("STEP 8: Generating thumbnails & YouTube metadata")
+        _notify(progress_callback, "metadata", "running")
         try:
             content_result = generate_content(
                 segments=segments,
@@ -451,8 +483,10 @@ def run_pipeline_vi(
             )
             logger.info(f"  Thumbnail prompts: {content_result.get('thumbnail_prompts_file', 'N/A')}")
             logger.info(f"  Metadata: {content_result.get('metadata_file', 'N/A')}")
+            _notify(progress_callback, "metadata", "ok")
         except Exception as e:
             logger.error(f"Content generation failed (non-fatal): {e}")
+            _notify(progress_callback, "metadata", "fail", error=str(e)[:120])
     else:
         logger.info("Skipping thumbnail/metadata generation (GOOGLE_API_KEY not set)")
 
@@ -469,10 +503,13 @@ def run_pipeline_vi(
             public=public,
         )
         for platform_name, res in publish_results.items():
+            step_key = f"upload:{platform_name}"
             if res.success:
                 logger.info(f"  [OK] {platform_name}: {res.url}")
+                _notify(progress_callback, step_key, "ok", url=res.url)
             else:
                 logger.error(f"  [FAIL] {platform_name}: {res.error} - {res.error_message}")
+                _notify(progress_callback, step_key, "fail", error=res.error or "unknown")
     elif upload_platforms and not dubbed_video_path:
         logger.warning("STEP 9 skipped: --upload requested but --skip-video produced no video file")
 
