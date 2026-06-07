@@ -122,3 +122,19 @@ def test_publish_runs_each_platform_independently(tmp_path, monkeypatch):
     assert results["facebook"].error == "exception"
     assert "boom" in results["facebook"].error_message
     assert [c[0] for c in call_log] == ["youtube", "facebook"]
+
+
+def test_facebook_config_load_raises_when_missing(tmp_path, monkeypatch):
+    from src.publishers import auth
+    monkeypatch.setenv("AUTO_TRANSLATE_HOME", str(tmp_path))
+    with pytest.raises(auth.NotLoggedInError):
+        auth.load_facebook_config()
+
+
+def test_save_then_load_facebook_token_roundtrip(tmp_path, monkeypatch):
+    from src.publishers import auth
+    monkeypatch.setenv("AUTO_TRANSLATE_HOME", str(tmp_path))
+    auth.save_facebook_token(page_id="1234567890", page_token="EAAB_fake_page_token")
+    cfg = auth.load_facebook_config()
+    assert cfg.page_id == "1234567890"
+    assert cfg.page_token == "EAAB_fake_page_token"

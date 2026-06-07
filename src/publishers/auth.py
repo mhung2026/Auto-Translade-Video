@@ -10,6 +10,7 @@ Override the parent directory via env var AUTO_TRANSLATE_HOME.
 """
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -76,3 +77,39 @@ def load_youtube_credentials():
                 "Run: python -m src.publishers.youtube login"
             )
     return creds
+
+
+FACEBOOK_TOKEN_FILE = "facebook_token.json"
+
+
+@dataclass
+class FacebookConfig:
+    page_id: str
+    page_token: str
+
+
+def facebook_token_path() -> Path:
+    return auto_translate_home() / FACEBOOK_TOKEN_FILE
+
+
+def save_facebook_token(page_id: str, page_token: str) -> None:
+    path = facebook_token_path()
+    path.write_text(
+        json.dumps({"page_id": page_id, "page_token": page_token}, indent=2),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def load_facebook_config() -> FacebookConfig:
+    path = facebook_token_path()
+    if not path.exists():
+        raise NotLoggedInError(
+            f"Facebook not configured. Expected token at {path}. "
+            f"Run: python -m src.publishers.facebook setup --user-token <SHORT_LIVED_TOKEN>"
+        )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return FacebookConfig(page_id=data["page_id"], page_token=data["page_token"])
