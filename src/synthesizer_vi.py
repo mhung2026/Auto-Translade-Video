@@ -99,14 +99,20 @@ def synthesize_segment_vi(
     max_speed = config.VIETNAMESE_TTS_MAX_SPEED
 
     # --- Step 1: Estimate optimal speed based on text length and target duration ---
-    # Vietnamese speech: ~5-6 syllables/sec at normal speed
-    # Approximate: 1 Vietnamese word ≈ 1-2 syllables, ~4-5 words/sec
-    chars_per_sec_normal = 12.0  # Vietnamese characters per second at 1.0x
+    # Calibrated from LucyLab male voice: ~19 chars/sec at 1.0x (measured by
+    # running 114 chars through TTS at 1.3x → 4.6s output → 19.1 chars/sec at 1.0x).
+    # Add a 10% safety headroom so we tolerate slight tail silence without
+    # speeding up the audio unnecessarily — users complained the VI voice
+    # sounded rushed compared to the original.
+    chars_per_sec_normal = 19.0
+    safety_headroom = 1.10
     estimated_normal_duration = len(text_vi) / chars_per_sec_normal
 
     speed = 1.0
     if target_duration and estimated_normal_duration > 0:
-        estimated_ratio = estimated_normal_duration / target_duration
+        # Only speed up if the natural-paced VI would overflow the target by
+        # more than the safety headroom.
+        estimated_ratio = estimated_normal_duration / (target_duration * safety_headroom)
         if estimated_ratio > 1.0:
             speed = min(estimated_ratio, max_speed)
             speed = round(speed, 2)
