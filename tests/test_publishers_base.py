@@ -53,3 +53,30 @@ def test_auto_translate_home_default_when_no_env(monkeypatch, tmp_path):
     home = auth.auto_translate_home()
     assert home == tmp_path / ".auto-translate"
     assert home.exists()
+
+
+def test_load_youtube_credentials_raises_when_missing(tmp_path, monkeypatch):
+    from src.publishers import auth
+    monkeypatch.setenv("AUTO_TRANSLATE_HOME", str(tmp_path))
+    with pytest.raises(auth.NotLoggedInError) as exc:
+        auth.load_youtube_credentials()
+    assert "youtube_token.json" in str(exc.value)
+
+
+def test_save_then_load_youtube_credentials_roundtrip(tmp_path, monkeypatch):
+    from src.publishers import auth
+    monkeypatch.setenv("AUTO_TRANSLATE_HOME", str(tmp_path))
+
+    fake_creds_payload = {
+        "token": "ya29.fake",
+        "refresh_token": "1//fake_refresh",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "fake.apps.googleusercontent.com",
+        "client_secret": "fake_secret",
+        "scopes": ["https://www.googleapis.com/auth/youtube.upload"],
+    }
+    auth.save_youtube_credentials_dict(fake_creds_payload)
+
+    loaded = auth.load_youtube_credentials_dict()
+    assert loaded["refresh_token"] == "1//fake_refresh"
+    assert loaded["client_id"] == "fake.apps.googleusercontent.com"
