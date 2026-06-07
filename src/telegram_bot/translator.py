@@ -35,33 +35,29 @@ async def translate_via_claude(
         logger.info(f"transcript_vi.json already exists at {transcript_vi}, skipping Claude")
         return
 
-    # Inline instructions (do NOT invoke the translate-video-segments skill —
-    # skills can hang in headless `-p` mode if they expect user confirmation).
+    # IMPORTANT: must be a single line (no \n) because the prompt is passed
+    # as a Windows command-line argument and CMD truncates multi-line args.
+    input_path = (work_dir / "transcript_original.json").as_posix()
+    output_path = (work_dir / "transcript_vi.json").as_posix()
     prompt = (
-        f"TASK: Use the Write tool to create the file:\n"
-        f"  {work_dir}\\transcript_vi.json\n\n"
-        f"INPUT: Read {work_dir}\\transcript_original.json — an array of "
-        f"segments with fields id, text, start, end, duration.\n\n"
-        f"OUTPUT FORMAT: A JSON array, same length, same order. For every "
-        f"segment, preserve every original field exactly, AND append a new "
-        f"string field `text_vi` containing the Vietnamese translation of `text`.\n\n"
-        f"TRANSLATION RULES:\n"
-        f"- Auto-detect source language (English / Chinese / Japanese / etc.).\n"
-        f"- Target: Vietnamese, YouTube-creator tone (bạn / mình / các bạn — "
-        f"never mày/tao).\n"
-        f"- Drop filler particles (啊/呢/嘛/吧 / um / uh / like).\n"
-        f"- Keep brand names original; pinyin / romanization for Asian names.\n"
-        f"- For bleeped segments (text is only `**` or punctuation): use a "
-        f"short exclamation like \"Hả.\" or \"Á.\" — NEVER empty or just \"...\".\n"
-        f"- Aim for ~12 Vietnamese chars per second of segment duration.\n\n"
-        f"STRICT OUTPUT RULES:\n"
-        f"- DO NOT display the JSON in your reply.\n"
-        f"- DO NOT print a markdown table preview.\n"
-        f"- DO NOT show intermediate steps or explanations.\n"
-        f"- DO NOT invoke any skill or MCP tool.\n"
-        f"- After the Write tool succeeds, reply with EXACTLY this text and "
-        f"nothing else: DONE\n"
-        f"- If you cannot complete the task, reply with: ERROR: <one-line reason>"
+        f"TASK: Use the Write tool to create '{output_path}'. "
+        f"INPUT: Read '{input_path}' which is a JSON array of segments "
+        f"(fields: id, text, start, end, duration). "
+        f"OUTPUT: A JSON array with the same length and order; for every segment "
+        f"preserve every original field exactly AND append a new string field "
+        f"'text_vi' containing the Vietnamese translation of 'text'. "
+        f"RULES: Auto-detect source language. Translate to Vietnamese with a "
+        f"YouTube-creator tone (use 'bạn'/'mình'/'các bạn', never 'mày'/'tao'). "
+        f"Drop filler particles. Keep brand names original; pinyin/romanization "
+        f"for Asian character names. For bleeped segments (text is only '**' or "
+        f"punctuation) use a short exclamation like 'Hả.' or 'Á.' — never empty "
+        f"or just '...'. Aim for about 12 Vietnamese characters per second of "
+        f"segment duration. "
+        f"STRICT: Do NOT display the JSON in your reply. Do NOT print a markdown "
+        f"table preview. Do NOT invoke any skill or MCP tool. After the Write "
+        f"tool succeeds, reply with EXACTLY the single word DONE and nothing "
+        f"else. If you cannot complete the task, reply with ERROR followed by a "
+        f"one-line reason."
     )
     # --dangerously-skip-permissions: auto-approve every tool call so the
     # subprocess never blocks waiting for a permission prompt that no human

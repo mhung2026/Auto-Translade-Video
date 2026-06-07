@@ -30,93 +30,43 @@ class ContentError(RuntimeError):
     pass
 
 
-METADATA_PROMPT = """\
-You are generating YouTube metadata for a Vietnamese-language dub video.
-
-Read this file:
-  {work_dir}/transcript_vi.json
-
-It contains an array of segments with fields: id, text (original), text_vi (Vietnamese), start, end, duration.
-
-Write this output file with EXACTLY the JSON shape shown below:
-  {work_dir}/youtube_metadata.json
-
-Schema:
-{{
-  "title": "<60-100 chars, Vietnamese, click-friendly, no clickbait lies>",
-  "description": "<200-500 words Vietnamese, see rules below>",
-  "hashtags": ["#tag1", "#tag2", "..."]
-}}
-
-TITLE RULES:
-- 60-100 characters in Vietnamese
-- Hook attention in first 5 words
-- Click-friendly but honest (no clickbait lies)
-- Avoid emojis unless they fit naturally
-- Lowercase is fine, do not stuff keywords
-
-DESCRIPTION RULES:
-- 200-500 Vietnamese words
-- Open with a 1-2 sentence hook that summarizes the video
-- Middle: bullet-style or paragraph summary of key points from the transcript
-- End with: "Đăng ký kênh để xem thêm video chất lượng nhé!"
-- Use real newlines (\\n) for paragraph breaks; do NOT escape them as literal "\\n"
-
-HASHTAGS RULES:
-- 5 to 10 hashtags
-- Mix of broad (e.g. #YouTube, #review) and specific (related to the actual topic)
-- Vietnamese; use underscore for multi-word tags (e.g. #bể_cá, #lọc_nước)
-- No spaces inside tags
-- Each hashtag must start with #
-
-OUTPUT:
-- Write ONLY the JSON file at the path above.
-- Do NOT print the JSON to stdout.
-- Do NOT run any other commands or skills.
-- Do NOT call any MCP tool.
-- Do NOT ask follow-up questions.
-- Do this work yourself directly. Stop as soon as the file is written.
-- If transcript_vi.json is missing or malformed, exit with a clear error message.
-"""
+METADATA_PROMPT = (
+    "TASK: Use the Write tool to create '{work_dir}/youtube_metadata.json'. "
+    "INPUT: Read '{work_dir}/transcript_vi.json' which is a JSON array of "
+    "segments with fields id, text, text_vi, start, end, duration. "
+    "OUTPUT FORMAT: a JSON object with EXACTLY 3 fields: "
+    "title (string, 60-100 Vietnamese chars, hook in first 5 words, no clickbait), "
+    "description (string, 200-500 Vietnamese words, open with a 1-2 sentence hook, "
+    "summarize key points, end with 'Đăng ký kênh để xem thêm video chất lượng nhé!', "
+    "use real newline characters for paragraph breaks), "
+    "hashtags (array of 5-10 Vietnamese hashtags starting with #, use underscore "
+    "for multi-word like #bể_cá, no spaces inside tags, mix broad and specific). "
+    "STRICT: Do NOT print the JSON to stdout. Do NOT call any skill or MCP tool. "
+    "Do NOT ask follow-up questions. After the Write tool succeeds, reply with "
+    "EXACTLY the single word DONE and nothing else."
+)
 
 
-THUMBNAIL_PROMPT = """\
-You are designing a YouTube thumbnail image for a Vietnamese-language dub video.
-
-CONTEXT FILES TO READ in {work_dir}:
-  - transcript_vi.json (read the first 3 segments to understand the topic)
-  - youtube_metadata.json (read the title)
-
-STEP 1: Design a vivid English image-generation prompt yourself based on the content.
-   The prompt should describe:
-   - A visual subject directly related to the video's topic
-   - 16:9 aspect ratio YouTube thumbnail composition
-   - High contrast, vibrant colors that pop on a mobile screen
-   - 1-2 main subjects, clearly visible
-   - Professional photo or illustration style (your choice based on topic)
-   - DO NOT request any text in the image (no captions, no overlay text — keep it visual only)
-
-STEP 2: Generate the image using the Higgsfield MCP tool.
-   - First choice of model: "nano-banana-pro"
-   - If that model is unavailable in your workspace, try: "gpt-image-2"
-   - Aspect ratio: 16:9
-   - Quality: the highest the model supports
-   - Generate ONE image only (no variants)
-
-STEP 3: After the generation job completes, download the image and save it to:
-   {work_dir}/thumbnail.jpg
-
-   - Format: JPG
-   - Resolution: at least 1280x720
-   - If the image is larger, that's fine — YouTube will accept up to 2 MB
-
-CONSTRAINTS:
-- DO NOT save to any other path
-- DO NOT generate multiple images
-- DO NOT run unrelated commands
-- DO NOT ask follow-up questions
-- If Higgsfield MCP is not available in this workspace, report the error clearly and exit
-"""
+THUMBNAIL_PROMPT = (
+    "TASK: Design and download a YouTube thumbnail image to "
+    "'{work_dir}/thumbnail.jpg'. "
+    "CONTEXT: Read '{work_dir}/transcript_vi.json' (first 3 segments) and "
+    "'{work_dir}/youtube_metadata.json' (title) to understand the topic. "
+    "STEP 1: Write a vivid English image-generation prompt yourself describing a "
+    "visual subject related to the video, 16:9 YouTube thumbnail composition, "
+    "high contrast vibrant colors, 1-2 main subjects clearly visible, "
+    "professional photo or illustration style. Do NOT request any text overlay "
+    "in the image. "
+    "STEP 2: Use the Higgsfield MCP tool generate_image with model "
+    "'nano-banana-pro' (fallback 'gpt-image-2'), aspect ratio 16:9, highest "
+    "quality, ONE image only. "
+    "STEP 3: After the generation job completes, download the image and save it "
+    "to '{work_dir}/thumbnail.jpg' (JPG format, at least 1280x720). "
+    "STRICT: Do NOT save to any other path. Do NOT generate variants. Do NOT "
+    "ask follow-up questions. After the file is saved, reply with EXACTLY the "
+    "single word DONE. If Higgsfield is unavailable, reply with ERROR followed "
+    "by a one-line reason."
+)
 
 
 def _run_claude(prompt: str, cwd: Path, timeout_sec: int) -> None:
