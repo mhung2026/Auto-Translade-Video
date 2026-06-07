@@ -17,8 +17,8 @@ from src.utils import setup_logging, ensure_dir
 from src.downloader import download_video
 from src.audio_extractor import extract_audio
 from src.transcriber import transcribe, save_transcript
-from src.translator import translate_segments
 from src.synthesizer import synthesize_segment
+from src.translate_pending import write_hint as _write_translate_pending_hint
 from src.audio_merger import merge_segments
 from src.vocal_separator import separate_vocals
 from src.video_merger import merge_video
@@ -141,20 +141,61 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Deprecated alias for --bg-mode=none.",
     )
+    parser.add_argument(
+        "--resume",
+        metavar="WORK_DIR",
+        help="Resume a previous run inside the given work directory. "
+             "Skips already-completed steps based on cached artifacts.",
+    )
 
     args = parser.parse_args()
     if args.no_bg_music:
         args.bg_mode = "none"
 
-    # Fallback: if no --url and no --file, read VIDEO_URL from .env
-    if not args.url and not args.file:
+    # Fallback: if no --url and no --file, read VIDEO_URL from .env.
+    # On --resume, neither is required (the cached video sits in work_dir).
+    if not args.url and not args.file and not args.resume:
         if config.VIDEO_URL:
             args.url = config.VIDEO_URL
             logger.info(f"Using VIDEO_URL from .env: {args.url}")
         else:
-            parser.error("No video specified. Use --url, --file, or set VIDEO_URL in .env")
+            parser.error("No video specified. Use --url, --file, --resume, or set VIDEO_URL in .env")
 
     return args
+
+
+def _resolve_video(work_dir: str, url: str | None, file_path: str | None) -> str:
+    """Locate the source video for this work_dir.
+
+    Resume-friendly: reuse a previously downloaded/copied video in work_dir
+    instead of re-downloading. Files matching ``dubbed_video*.mp4`` are
+    treated as pipeline output, not source.
+    """
+    if file_path:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Video file not found: {file_path}")
+        return file_path
+
+    video_exts = (".mp4", ".mkv", ".webm", ".mov", ".avi")
+    output_prefixes = ("dubbed_video",)
+    if os.path.isdir(work_dir):
+        for f in sorted(os.listdir(work_dir)):
+            lower = f.lower()
+            if not lower.endswith(video_exts):
+                continue
+            if any(lower.startswith(prefix) for prefix in output_prefixes):
+                continue
+            cached = os.path.join(work_dir, f)
+            logger.info(f"Reusing existing video: {cached}")
+            return cached
+
+    if url:
+        return download_video(url, work_dir)
+
+    raise RuntimeError(
+        f"No source video found in {work_dir} and no --url/--file given. "
+        "Pass --file <path> on resume if the original is outside work_dir."
+    )
 
 
 def run_pipeline(
@@ -164,6 +205,7 @@ def run_pipeline(
     voice: str,
     skip_video: bool,
     output_dir: str,
+    resume_dir: str | None = None,
     bg_mode: str = "demucs",
     bg_duck_db: float = -12.0,
 ) -> dict:
@@ -172,27 +214,34 @@ def run_pipeline(
     lang_code = LANG_MAP.get(source_lang, source_lang)
     logger.info(f"Source language: {lang_code}")
 
-    # Create output folder named by timestamp (YYYYMMDDHHmmss)
-    folder_name = datetime.now().strftime("%Y%m%d%H%M%S")
-    work_dir = ensure_dir(os.path.join(output_dir, folder_name))
-    logger.info(f"Output folder: {work_dir}")
+    if resume_dir:
+        if not os.path.isdir(resume_dir):
+            raise FileNotFoundError(f"Resume directory not found: {resume_dir}")
+        work_dir = resume_dir
+        folder_name = os.path.basename(os.path.normpath(work_dir))
+        logger.info(f"Resuming work directory: {work_dir}")
+    else:
+        folder_name = datetime.now().strftime("%Y%m%d%H%M%S")
+        work_dir = ensure_dir(os.path.join(output_dir, folder_name))
+        logger.info(f"Output folder: {work_dir}")
+
+    transcript_orig_path = os.path.join(work_dir, "transcript_original.json")
+    transcript_jp_path = os.path.join(work_dir, "transcript_jp.json")
+    audio_path = os.path.join(work_dir, "original_audio.wav")
 
     # --- Step 1: Download or use local file ---
     logger.info("=" * 60)
     logger.info("STEP 1: Acquiring video")
-    if url:
-        video_path = download_video(url, work_dir)
-    else:
-        video_path = file_path
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Video file not found: {video_path}")
+    video_path = _resolve_video(work_dir, url, file_path)
     logger.info(f"Video: {video_path}")
 
     # --- Step 2: Extract audio ---
     logger.info("=" * 60)
-    logger.info("STEP 2: Extracting audio")
-    audio_path = os.path.join(work_dir, "original_audio.wav")
-    extract_audio(video_path, audio_path)
+    if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+        logger.info(f"STEP 2: Reusing existing extracted audio: {audio_path}")
+    else:
+        logger.info("STEP 2: Extracting audio")
+        extract_audio(video_path, audio_path)
 
     # --- Step 2.5: Resolve background track for the dub merge ---
     background_path: str | None = None
@@ -219,18 +268,28 @@ def run_pipeline(
 
     # --- Step 3: Speech-to-Text (ASR) ---
     logger.info("=" * 60)
-    logger.info("STEP 3: Transcribing audio (ASR)")
-    segments = transcribe(audio_path, lang_code)
-    save_transcript(segments, os.path.join(work_dir, "transcript_original.json"))
-    generate_srt(segments, os.path.join(work_dir, "transcript_original.srt"), text_field="text")
+    if os.path.exists(transcript_orig_path):
+        logger.info(f"STEP 3: Reusing existing transcript: {transcript_orig_path}")
+        with open(transcript_orig_path, encoding="utf-8") as f:
+            segments = json.load(f)
+    else:
+        logger.info("STEP 3: Transcribing audio (ASR)")
+        segments = transcribe(audio_path, lang_code)
+        save_transcript(segments, transcript_orig_path)
+        generate_srt(segments, os.path.join(work_dir, "transcript_original.srt"), text_field="text")
     logger.info(f"Transcribed {len(segments)} segments")
 
-    # --- Step 4: Translate to Japanese ---
+    # --- Step 4: Translate to Japanese (manual via skill or web AI) ---
     logger.info("=" * 60)
-    logger.info("STEP 4: Translating to Japanese")
-    segments = translate_segments(segments, lang_code)
-    save_transcript(segments, os.path.join(work_dir, "transcript_jp.json"))
-    generate_srt(segments, os.path.join(work_dir, "transcript_jp.srt"), text_field="text_jp")
+    logger.info("STEP 4: Loading Japanese translation")
+    if os.path.exists(transcript_jp_path):
+        logger.info(f"Reusing existing translation: {transcript_jp_path}")
+        with open(transcript_jp_path, encoding="utf-8") as f:
+            segments = json.load(f)
+    else:
+        _write_translate_pending_hint(work_dir, "ja-JP", source_lang)
+        logger.warning("Translation pending — see TRANSLATE_PENDING.txt in work dir")
+        return {"status": "translate_pending", "work_dir": work_dir}
 
     # --- Step 5: TTS for each segment ---
     logger.info("=" * 60)
@@ -352,6 +411,7 @@ def main():
             voice=args.voice,
             skip_video=args.skip_video,
             output_dir=args.output_dir,
+            resume_dir=args.resume,
             bg_mode=args.bg_mode,
             bg_duck_db=args.bg_duck_db,
         )

@@ -1,31 +1,105 @@
+# ============================================================
+# Secrets / config
+# ============================================================
 .env
-output/
+.env.local
+.env.*.local
+*.key
+*.pem
+*_cookies.txt
+www.douyin.com_cookies.txt
+
+# ============================================================
+# Python
+# ============================================================
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 *.egg-info/
+*.egg
 dist/
 build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
 .venv/
 venv/
-*.wav
+env/
+ENV/
+
+# ============================================================
+# IDEs / editors
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ============================================================
+# Logs
+# ============================================================
+*.log
+logs/
+
+# ============================================================
+# Media output / inputs (large binaries — keep out of git)
+# ============================================================
 *.mp4
 *.mkv
 *.webm
+*.mov
+*.avi
+*.flv
+*.wav
+*.mp3
+*.flac
+*.aac
+*.m4a
+*.ogg
+*.opus
 
-# Generated YouTube transcripts
-scripts/
-
-# Local-only folders
-Auto Translade video/
-
-# Local input lists (may contain user-specific URLs)
-video_links.txt
-
-# Local-only artifacts and logs
-.claude/
-.playwright-mcp/
+# ============================================================
+# Pipeline working / output directories
+# ============================================================
+output/
 downloads/
 input/
-*.log
-www.douyin.com_cookies.txt
+
+# ============================================================
+# AI / dev-tool local state
+# ============================================================
+.claude/
+.codegraph/
+.playwright-mcp/
+.cursor/
+.aider*
+.continue/
+
+# ============================================================
+# Personal job lists (templates committed as *.example.json)
+# ============================================================
+list_video.json
+get_content_url.json
+video_links.txt
+scripts/
+
+# ============================================================
+# Legacy local folders
+# ============================================================
+Auto Translade video/

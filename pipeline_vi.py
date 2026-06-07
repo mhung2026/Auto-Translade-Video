@@ -18,11 +18,11 @@ from src.utils import setup_logging, ensure_dir
 from src.downloader import download_video
 from src.audio_extractor import extract_audio
 from src.transcriber import transcribe, save_transcript
-from src.translator_vi import translate_segments_vi
 from src.synthesizer_vi import synthesize_segment_vi
 from src.audio_merger import merge_segments, fit_segments_to_timeline
 from src.vocal_separator import separate_vocals
 from src.video_merger import merge_video
+from src.translate_pending import write_hint as _write_translate_pending_hint
 from src.srt_generator import generate_srt
 from src.content_generator import generate_content
 
@@ -155,13 +155,6 @@ def parse_args() -> argparse.Namespace:
         help="Resume an existing work directory. Steps whose outputs already exist are skipped.",
     )
     parser.add_argument(
-        "--no-api-translate",
-        action="store_true",
-        help="Don't call Anthropic API at the translation step. If transcript_vi.json is missing, "
-             "the pipeline writes a hint file and exits — you then run the translate-video-segments "
-             "skill in Claude Code (uses your subscription tokens) and re-run with --resume.",
-    )
-    parser.add_argument(
         "--bg-mode",
         choices=["demucs", "duck", "none"],
         default="demucs",
@@ -253,47 +246,6 @@ def _resolve_video(work_dir: str, url: str | None, file_path: str | None) -> str
     )
 
 
-def _write_translate_pending_hint(work_dir: str, target_lang: str, source_lang: str) -> str:
-    """Write TRANSLATE_PENDING.txt with instructions for using the skill."""
-    target_name = "Vietnamese" if target_lang == "vi-VN" else "Japanese"
-    out_field = "text_vi" if target_lang == "vi-VN" else "text_jp"
-    out_file = "transcript_vi.json" if target_lang == "vi-VN" else "transcript_jp.json"
-
-    hint_path = os.path.join(work_dir, "TRANSLATE_PENDING.txt")
-    with open(hint_path, "w", encoding="utf-8") as f:
-        f.write(
-            f"""TRANSLATION STEP PENDING
-========================
-
-Source language : {source_lang}
-Target language : {target_lang} ({target_name})
-Work directory  : {work_dir}
-
-The pipeline stopped at Step 4 because --no-api-translate was passed and
-{out_file} does not exist yet.
-
-To translate using your Claude Code subscription tokens (instead of paying
-the Anthropic API), do this in Claude Code:
-
-  1. Open this repo in Claude Code (you're probably already there).
-  2. Type or say:
-       Translate the transcript at {work_dir} to {target_name}.
-     (or invoke the skill directly: /translate-video-segments)
-
-  3. The translate-video-segments skill will read transcript_original.json
-     and write {out_file} in this directory, with a "{out_field}" field
-     added to every segment.
-
-  4. Once {out_file} exists, resume the pipeline with:
-       python pipeline_vi.py --resume "{work_dir}" --voice <male|female>
-
-The pipeline will detect the translated file, skip Step 4, and continue
-with TTS, audio fitting, video merge, and metadata generation.
-"""
-        )
-    return hint_path
-
-
 def run_pipeline_vi(
     url: str | None,
     file_path: str | None,
@@ -302,7 +254,6 @@ def run_pipeline_vi(
     skip_video: bool,
     output_dir: str,
     resume_dir: str | None = None,
-    no_api_translate: bool = False,
     bg_mode: str = "demucs",
     bg_duck_db: float = -12.0,
 ) -> dict:
@@ -385,14 +336,10 @@ def run_pipeline_vi(
         logger.info(f"Reusing existing translation: {transcript_vi_path}")
         with open(transcript_vi_path, encoding="utf-8") as f:
             segments = json.load(f)
-    elif no_api_translate:
+    else:
         _write_translate_pending_hint(work_dir, "vi-VN", source_lang)
         logger.warning("Translation pending — see TRANSLATE_PENDING.txt in work dir")
         return {"status": "translate_pending", "work_dir": work_dir}
-    else:
-        segments = translate_segments_vi(segments, lang_code)
-        save_transcript(segments, transcript_vi_path)
-        generate_srt(segments, os.path.join(work_dir, "transcript_vi.srt"), text_field="text_vi")
 
     # --- Step 5: TTS for each segment (LucyLab API) ---
     logger.info("=" * 60)
@@ -557,7 +504,6 @@ def main():
             skip_video=args.skip_video,
             output_dir=args.output_dir,
             resume_dir=args.resume,
-            no_api_translate=args.no_api_translate,
             bg_mode=args.bg_mode,
             bg_duck_db=args.bg_duck_db,
         )

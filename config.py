@@ -15,10 +15,8 @@ def _require_env(key: str) -> str:
 # Required
 AZURE_SPEECH_KEY = _require_env("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION = _require_env("AZURE_SPEECH_REGION")
-ANTHROPIC_API_KEY = _require_env("ANTHROPIC_API_KEY")
 
 # Optional with defaults
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-20250514")
 TTS_VOICE = os.getenv("TTS_VOICE", "ja-JP-KeitaNeural")
 TTS_MAX_SPEED_RATIO = float(os.getenv("TTS_MAX_SPEED_RATIO", "1.3"))
 DEFAULT_SOURCE_LANG = os.getenv("DEFAULT_SOURCE_LANG", "en-US")
