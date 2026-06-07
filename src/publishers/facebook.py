@@ -15,8 +15,6 @@ from dotenv import load_dotenv
 
 from src.publishers import auth
 
-load_dotenv()                                # populate FACEBOOK_APP_ID etc. without forcing config.py
-
 
 GRAPH_API = "https://graph.facebook.com/v21.0"
 
@@ -34,6 +32,7 @@ def _env(key: str) -> str:
 
 def setup(user_token: str) -> None:
     """Exchange a short-lived user token for a long-lived Page Access Token and store it."""
+    load_dotenv()                            # populate FACEBOOK_APP_ID etc. without forcing config.py
     app_id = _env("FACEBOOK_APP_ID")
     app_secret = _env("FACEBOOK_APP_SECRET")
     page_id = _env("FACEBOOK_PAGE_ID")
@@ -49,8 +48,17 @@ def setup(user_token: str) -> None:
         },
         timeout=30,
     )
-    r.raise_for_status()
-    long_user_token = r.json()["access_token"]
+    try:
+        r.raise_for_status()
+    except requests.HTTPError:
+        # NOTE: never print the URL — query string holds client_secret + token.
+        print(f"ERROR: Graph API returned {r.status_code}: {r.text}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        long_user_token = r.json()["access_token"]
+    except KeyError:
+        print(f"ERROR: Unexpected Graph API response: {r.text}", file=sys.stderr)
+        sys.exit(1)
     print("Long-lived user token acquired.")
 
     # Step 2: long-lived user token → page accounts → page-specific token
@@ -59,7 +67,12 @@ def setup(user_token: str) -> None:
         params={"access_token": long_user_token},
         timeout=30,
     )
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.HTTPError:
+        # NOTE: never print the URL — query string holds the long-lived user token.
+        print(f"ERROR: Graph API returned {r.status_code}: {r.text}", file=sys.stderr)
+        sys.exit(1)
     page_token = None
     for page in r.json().get("data", []):
         if page["id"] == page_id:
@@ -75,15 +88,28 @@ def setup(user_token: str) -> None:
 
 
 def whoami() -> None:
-    cfg = auth.load_facebook_config()
+    try:
+        cfg = auth.load_facebook_config()
+    except auth.NotLoggedInError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
     r = requests.get(
         f"{GRAPH_API}/{cfg.page_id}",
         params={"access_token": cfg.page_token, "fields": "name,id"},
         timeout=30,
     )
-    r.raise_for_status()
-    data = r.json()
-    print(f"Page: {data['name']}  (id={data['id']})")
+    try:
+        r.raise_for_status()
+    except requests.HTTPError:
+        # NOTE: never print the URL — query string holds the page access token.
+        print(f"ERROR: Graph API returned {r.status_code}: {r.text}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        data = r.json()
+        print(f"Page: {data['name']}  (id={data['id']})")
+    except KeyError:
+        print(f"ERROR: Unexpected Graph API response: {r.text}", file=sys.stderr)
+        sys.exit(1)
 
 
 # Real upload() implementation lands in Task 7. This stub keeps Task 4's
