@@ -152,16 +152,21 @@ class Worker:
 
     async def _report_crash(self, job: Job, exc: Exception):
         tb_short = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        # Truncate so we fit under Telegram's 4096-char message limit and so a
+        # long error from Claude (markdown tables, backticks, etc.) doesn't
+        # blow up rendering. Plain text — NO parse_mode — because the error
+        # body can contain arbitrary characters that break Markdown/HTML.
+        tb_short = tb_short[:1500]
         text = (
-            f"💥 Job #{job.job_id} FAILED at step `{job.current_step}`\n"
+            f"💥 Job #{job.job_id} FAILED at step '{job.current_step}'\n"
             f"Error: {tb_short}\n"
-            f"Work dir: `{job.work_dir}`\n"
-            f"Resume: `python pipeline_vi.py --resume {job.work_dir}`"
+            f"Work dir: {job.work_dir}\n"
+            f"Resume: python pipeline_vi.py --resume \"{job.work_dir}\""
         )
         try:
-            await job.progress_message.edit_text(text, parse_mode="Markdown")
+            await job.progress_message.edit_text(text)
         except Exception:
             try:
-                await self.bot.send_message(job.chat_id, text, parse_mode="Markdown")
+                await self.bot.send_message(job.chat_id, text)
             except Exception:
                 logger.exception("Failed to deliver crash report to Telegram")
