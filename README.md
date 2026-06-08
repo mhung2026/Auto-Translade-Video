@@ -6,24 +6,32 @@ Tự động lồng tiếng video (YouTube / TikTok / Douyin / file local) sang 
 
 ```
 URL/file → Download → Extract audio → (Demucs tách BGM)
-        → ASR (Azure Speech) → Dịch sang VI/JP (skill hoặc web AI)
-        → TTS (LucyLab cho VI, Azure cho JP)
+        → ASR (WhisperX cho VI, Azure cho JP) → Dịch sang VI/JP (skill hoặc web AI)
+        → TTS (VieNeu-TTS cho VI, Azure cho JP)
         → Khớp timeline → Mix với BGM → Ghép vào video
 ```
 
+> Pipeline tiếng Việt (`pipeline_vi.py`) chạy **hoàn toàn local, không cần API key**:
+> ASR bằng [WhisperX](https://github.com/m-bain/whisperX) và TTS bằng
+> [VieNeu-TTS](https://github.com/pnnbao97/VieNeu-TTS) (đều chạy CPU). Pipeline
+> tiếng Nhật (`pipeline.py`) vẫn dùng Azure Speech.
+
 ## Yêu cầu
 
-- Python 3.10+
+- Python 3.11 hoặc 3.12 (3.14 quá mới — chưa có wheel torch CPU)
 - `ffmpeg` trong PATH
-- Tài khoản **Azure Speech** (ASR + JP TTS)
-- Tài khoản **LucyLab** (chỉ cần nếu lồng VI) – https://lucylab.io
+- **Lồng VI:** không cần API key — WhisperX + VieNeu-TTS tải model về chạy local (CPU)
+- **Lồng JP:** cần tài khoản **Azure Speech** (ASR + JP TTS)
 - (Tuỳ chọn) Google Gemini API key (để tự sinh metadata YouTube + thumbnail)
 
 ```bash
 pip install -r requirements.txt
 playwright install chromium      # cần cho download Douyin
-cp .env.example .env             # rồi điền key vào
+cp .env.example .env             # điền key (chỉ cần cho JP / Gemini)
 ```
+
+> **Lần chạy đầu** WhisperX và VieNeu-TTS sẽ tải model từ HuggingFace
+> (vài trăm MB) rồi cache lại; các lần sau chạy offline.
 
 ## Hai cách dịch — chọn 1
 
@@ -82,6 +90,20 @@ python pipeline_vi.py --url ... --bg-mode duck --bg-duck-db -15
 python pipeline_vi.py --url ... --bg-mode none            # bỏ BGM
 ```
 
+#### Chọn giọng VieNeu-TTS
+
+Đặt giọng `male` / `female` trong `.env` (dùng tên mô tả hoặc id ngắn của preset):
+
+```ini
+VIENEU_MODE=standard
+VIETNAMESE_VOICEID_MALE=Xuân Vĩnh (nam miền Nam)
+VIETNAMESE_VOICEID_FEMALE=Thục Đoan (nữ miền Nam)
+```
+
+Các preset có sẵn: `Thanh Bình`, `Phạm Tuyên`, `Xuân Vĩnh`, `Thái Sơn` (nam),
+`Thục Đoan`, `Trúc Ly`, `Bích Ngọc` (nữ). Có thể chỉ tới một file `.wav` 3–5s
+để clone giọng zero-shot thay cho preset.
+
 ### Lồng tiếng Nhật
 
 ```bash
@@ -117,20 +139,22 @@ output/VN/20260601120000_vi/
 ├── transcript_vi.json              # bản dịch (Path A hoặc B tạo)
 ├── transcript_vi.srt
 ├── segments/seg_xxx.wav            # TTS từng segment
-├── dubbed_audio.wav                # audio cuối (VI + BGM)
+├── audio_vi_full.wav               # audio cuối (VI + BGM)
 └── dubbed_video.mp4                # video cuối
 ```
 
 ## Tính năng
 
 - Download Douyin (Playwright), TikTok, YouTube, 1000+ site qua yt-dlp
-- ASR Azure Speech (zh-CN, en, ja, vi, …)
+- ASR:
+  - **VI** — WhisperX local (CPU, int8 + căn chỉnh word-level wav2vec2)
+  - **JP** — Azure Speech
 - 3 chế độ BGM:
   - `demucs` — tách giọng/nhạc bằng Demucs (htdemucs), chất lượng cao
   - `duck` — giảm volume audio gốc theo `--bg-duck-db` rồi đè TTS lên
   - `none` — base silent, không giữ BGM
 - TTS:
-  - **VI** — LucyLab (giọng `male` / `female`)
+  - **VI** — VieNeu-TTS local (giọng `male` / `female`, chọn từ preset)
   - **JP** — Azure Neural Voice (mặc định `ja-JP-KeitaNeural`)
 - Timeline fit: tự `atempo` (max 1.4x) khi TTS dài hơn segment gốc
 - Resume từ work dir (`--resume`)
