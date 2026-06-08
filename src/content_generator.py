@@ -11,8 +11,6 @@ import re
 import time
 
 import requests
-from google import genai
-from google.genai import types
 
 from src.utils import setup_logging
 
@@ -131,6 +129,9 @@ Translated script ({lang_name}):
 
 Respond in this exact JSON format (no markdown code blocks):
 {{"title": "...", "description": "...", "hashtags": ["#tag1", "#tag2", ...]}}"""
+
+    from google import genai
+    from google.genai import types
 
     client = genai.Client(api_key=api_key)
 
@@ -272,6 +273,9 @@ def generate_thumbnails(
     Takes plain text scripts (not segments JSON).
     Returns list of saved thumbnail file paths.
     """
+    from google import genai
+    from google.genai import types
+
     client = genai.Client(api_key=api_key)
     saved_paths = []
 

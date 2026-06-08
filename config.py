@@ -12,9 +12,24 @@ def _require_env(key: str) -> str:
         sys.exit(1)
     return value
 
-# Required
-AZURE_SPEECH_KEY = _require_env("AZURE_SPEECH_KEY")
-AZURE_SPEECH_REGION = _require_env("AZURE_SPEECH_REGION")
+# Azure Speech — optional now. The Vietnamese pipeline uses local WhisperX for ASR
+# and local VieNeu-TTS for synthesis, so no key is needed. These are only required
+# by the Japanese pipeline (pipeline.py), which still calls Azure.
+AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
+AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "")
+
+# WhisperX ASR (local) — replaces Azure for the Vietnamese pipeline.
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+
+# VieNeu-TTS (local) — replaces LucyLab for the Vietnamese pipeline.
+# A voice id can be either a VieNeu preset voice name or a path to a 3-5s
+# reference .wav for zero-shot cloning.
+# Mode: 'standard' uses a GGUF backbone via llama.cpp (CPU, reliable EOS).
+# 'v3turbo' is the torch-free ONNX engine but currently loops on short text.
+VIENEU_MODE = os.getenv("VIENEU_MODE", "standard")
+VIETNAMESE_PRESET_VOICE = os.getenv("VIETNAMESE_PRESET_VOICE", "")
 
 # Optional with defaults
 TTS_VOICE = os.getenv("TTS_VOICE", "ja-JP-KeitaNeural")

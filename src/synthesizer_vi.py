@@ -1,77 +1,68 @@
-"""Vietnamese TTS Synthesizer using LucyLab API.
+"""Vietnamese TTS Synthesizer using local VieNeu-TTS.
 
-Flow:
-    1. POST ttsLongText → get projectExportId
-    2. Poll getExportStatus until state == "completed"
-    3. Download audio from returned URL
+Runs entirely on CPU (ONNX, torch-free) — no API key, no network. The model is
+loaded once and cached at module level because the pipeline calls
+synthesize_segment_vi once per segment.
+
+A voice id may be either a VieNeu preset voice name (e.g. "Xuân Vĩnh") or a path
+to a 3-5s reference .wav for zero-shot cloning. Speed is not adjusted here: the
+pipeline already fits each segment to the timeline with ffmpeg atempo.
 """
 import os
-import time
-import requests
 from pydub import AudioSegment
 import config
 from src.utils import setup_logging
 
 logger = setup_logging("synthesizer_vi")
 
-POLL_INTERVAL = 2  # seconds between status checks
-POLL_TIMEOUT = int(os.getenv("LUCYLAB_POLL_TIMEOUT", "300"))  # max seconds to wait for TTS completion
+_TTS = None
+_PRESET_VOICES: list[tuple[str, str]] = []
 
 
-def _call_lucylab(method: str, input_data: dict) -> dict:
-    """Call LucyLab JSON-RPC API."""
-    response = requests.post(
-        config.LUCYLAB_API_URL,
-        headers={
-            "Authorization": f"Bearer {config.VIETNAMESE_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "method": method,
-            "input": input_data,
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    if "error" in data:
-        raise RuntimeError(f"LucyLab API error: {data['error']}")
-
-    return data.get("result", {})
+def _get_tts():
+    """Lazily load and cache the VieNeu model (expensive — load once)."""
+    global _TTS, _PRESET_VOICES
+    if _TTS is None:
+        from vieneu import Vieneu
+        logger.info(f"Loading VieNeu-TTS model (mode={config.VIENEU_MODE}; cached afterwards)...")
+        _TTS = Vieneu(mode=config.VIENEU_MODE)
+        try:
+            _PRESET_VOICES = list(_TTS.list_preset_voices())
+            logger.info(f"VieNeu loaded. {len(_PRESET_VOICES)} preset voices available.")
+        except Exception as e:
+            logger.warning(f"Could not list preset voices: {e}")
+    return _TTS
 
 
-def _wait_for_audio(export_id: str) -> str:
-    """Poll getExportStatus until completed, return audio URL."""
-    start = time.time()
+def _resolve_voice(tts, voice_id: str | None) -> dict:
+    """Map voice_id to a VieNeu infer() kwarg.
 
-    while time.time() - start < POLL_TIMEOUT:
-        result = _call_lucylab("getExportStatus", {"projectExportId": export_id})
-        state = result.get("state", "")
+    - existing .wav path  → {'ref_audio': path}  (zero-shot cloning)
+    - non-empty string    → {'voice': name}      (preset voice)
+    - empty/None          → {} or configured default preset
+    """
+    if voice_id and voice_id.lower().endswith(".wav") and os.path.exists(voice_id):
+        logger.info(f"Cloning voice from reference audio: {voice_id}")
+        return {"ref_audio": voice_id}
 
-        if state == "completed":
-            url = result.get("url", "")
-            if not url:
-                raise RuntimeError("TTS completed but no audio URL returned")
-            return url
+    preset = voice_id or config.VIETNAMESE_PRESET_VOICE
+    if preset:
+        # VieNeu keys preset voices by a short id (e.g. "Vinh"), but exposes a
+        # friendly description (e.g. "Xuân Vĩnh (nam miền Nam)"). Accept either:
+        # if `preset` matches a description, swap in its short key.
+        key = preset
+        for description, voice_key in tts.list_preset_voices():
+            if preset in (voice_key, description):
+                key = voice_key
+                break
+        # infer() expects the resolved voice dict ({'codes','text'}), not the name.
+        try:
+            return {"voice": tts.get_preset_voice(key)}
+        except Exception as e:
+            logger.warning(f"Preset voice '{preset}' not found ({e}); using default voice.")
 
-        if state == "failed":
-            raise RuntimeError(f"TTS job failed: {result}")
-
-        time.sleep(POLL_INTERVAL)
-
-    raise TimeoutError(f"TTS polling timed out after {POLL_TIMEOUT}s for export {export_id}")
-
-
-def _download_audio(url: str, output_path: str) -> str:
-    """Download audio file from URL."""
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
-
-    with open(output_path, "wb") as f:
-        f.write(response.content)
-
-    return output_path
+    # No voice specified — let VieNeu use its built-in default voice.
+    return {}
 
 
 def synthesize_segment_vi(
@@ -80,113 +71,52 @@ def synthesize_segment_vi(
     target_duration: float | None = None,
     voice_id: str | None = None,
 ) -> dict:
-    """Synthesize Vietnamese text to audio using LucyLab API.
+    """Synthesize Vietnamese text to a WAV file using local VieNeu-TTS.
 
     Args:
-        text_vi: Vietnamese text to speak
-        output_path: Where to save the WAV file
-        target_duration: Target duration in seconds (for speed adjustment)
-        voice_id: LucyLab voice ID (default from config)
+        text_vi: Vietnamese text to speak.
+        output_path: Where to save the WAV file.
+        target_duration: Unused (timeline fit happens downstream); kept for API parity.
+        voice_id: VieNeu preset voice name or path to a reference .wav.
 
     Returns:
-        dict with path, actual_duration, speed_adjusted, rate_applied
+        dict with path, actual_duration, speed_adjusted, rate_applied.
     """
-    if not voice_id:
-        raise ValueError("voice_id is required. Use --voice male/female or set VIETNAMESE_VOICEID_MALE/FEMALE in .env")
-    if not config.VIETNAMESE_API_KEY:
-        raise ValueError("VIETNAMESE_API_KEY not set in .env")
+    tts = _get_tts()
+    infer_kwargs = _resolve_voice(tts, voice_id)
 
-    max_speed = config.VIETNAMESE_TTS_MAX_SPEED
+    logger.info(f"TTS request: {len(text_vi)} chars, voice={infer_kwargs or 'default'}")
 
-    # --- Step 1: Estimate optimal speed based on text length and target duration ---
-    # Calibrated from LucyLab male voice: ~19 chars/sec at 1.0x (measured by
-    # running 114 chars through TTS at 1.3x → 4.6s output → 19.1 chars/sec at 1.0x).
-    # Add a 10% safety headroom so we tolerate slight tail silence without
-    # speeding up the audio unnecessarily — users complained the VI voice
-    # sounded rushed compared to the original.
-    chars_per_sec_normal = 19.0
-    safety_headroom = 1.10
-    estimated_normal_duration = len(text_vi) / chars_per_sec_normal
+    # The GGUF backbone samples until it emits the speech-end token. At a high
+    # temperature it occasionally rambles past that token and generates tens of
+    # seconds of audio for a short line. Vietnamese tops out ~15 chars/sec, so a
+    # clip far longer than the text warrants means EOS was missed — regenerate
+    # cooler (lower temperature makes the model commit to EOS).
+    sample_rate = getattr(tts, "sample_rate", 24000)
+    max_plausible = max(len(text_vi) / 6.0 + 2.0, 4.0)
+    audio = None
+    for temperature, top_k in ((0.7, 40), (0.5, 30), (0.3, 20)):
+        audio = tts.infer(text=text_vi, temperature=temperature, top_k=top_k, **infer_kwargs)
+        duration = len(audio) / sample_rate
+        if duration <= max_plausible:
+            break
+        logger.warning(
+            f"TTS overran ({duration:.1f}s > {max_plausible:.1f}s plausible) at "
+            f"temperature={temperature}; retrying cooler."
+        )
 
-    speed = 1.0
-    if target_duration and estimated_normal_duration > 0:
-        # Only speed up if the natural-paced VI would overflow the target by
-        # more than the safety headroom.
-        estimated_ratio = estimated_normal_duration / (target_duration * safety_headroom)
-        if estimated_ratio > 1.0:
-            speed = min(estimated_ratio, max_speed)
-            speed = round(speed, 2)
+    # VieNeu writes WAV directly. Re-export through pydub to guarantee a format
+    # the rest of the pipeline (pydub / ffmpeg) reads consistently.
+    tmp_path = output_path + ".tmp.wav"
+    tts.save(audio, tmp_path)
+    seg = AudioSegment.from_file(tmp_path)
+    seg.export(output_path, format="wav")
+    os.remove(tmp_path)
 
-    # --- Step 2: Call TTS API ---
-    logger.info(f"TTS request: {len(text_vi)} chars, speed={speed}, target={target_duration:.1f}s"
-                if target_duration else f"TTS request: {len(text_vi)} chars, speed={speed}")
-
-    result = _call_lucylab("ttsLongText", {
-        "text": text_vi,
-        "userVoiceId": voice_id,
-        "speed": speed,
-    })
-
-    export_id = result.get("projectExportId")
-    if not export_id:
-        raise RuntimeError(f"No projectExportId in response: {result}")
-
-    logger.info(f"TTS job created: {export_id} (chars={result.get('characterCount', '?')}, "
-                f"blocks={result.get('blockCount', '?')})")
-
-    # --- Step 3: Poll for completion and download ---
-    audio_url = _wait_for_audio(export_id)
-    logger.info(f"TTS completed, downloading audio...")
-
-    # Download to a temp file first (API may return mp3 or wav)
-    temp_path = output_path + ".tmp"
-    _download_audio(audio_url, temp_path)
-
-    # Convert to WAV for consistency with the rest of the pipeline
-    audio = AudioSegment.from_file(temp_path)
-    audio.export(output_path, format="wav")
-    os.remove(temp_path)
-
-    actual_duration = len(audio) / 1000.0
-    speed_adjusted = speed != 1.0
-
-    # --- Step 4: If still too long, we can't re-synthesize easily (API cost),
-    # just log a warning for CapCut adjustment ---
-    if target_duration and actual_duration > target_duration * 1.1:
-        if speed < max_speed:
-            # Try once more with higher speed
-            new_speed = min(actual_duration / target_duration * speed, max_speed)
-            new_speed = round(new_speed, 2)
-            logger.info(
-                f"Re-adjusting speed: {actual_duration:.1f}s → ~{target_duration:.1f}s "
-                f"(speed: {speed} → {new_speed})"
-            )
-
-            result2 = _call_lucylab("ttsLongText", {
-                "text": text_vi,
-                "userVoiceId": voice_id,
-                "speed": new_speed,
-            })
-
-            export_id2 = result2.get("projectExportId")
-            if export_id2:
-                audio_url2 = _wait_for_audio(export_id2)
-                _download_audio(audio_url2, temp_path)
-                audio = AudioSegment.from_file(temp_path)
-                audio.export(output_path, format="wav")
-                os.remove(temp_path)
-                actual_duration = len(audio) / 1000.0
-                speed = new_speed
-                speed_adjusted = True
-        else:
-            logger.warning(
-                f"Segment too long ({actual_duration:.1f}s vs {target_duration:.1f}s target). "
-                f"Already at max speed {max_speed}x — adjust in CapCut."
-            )
-
+    actual_duration = len(seg) / 1000.0
     return {
         "path": output_path,
         "actual_duration": round(actual_duration, 3),
-        "speed_adjusted": speed_adjusted,
-        "rate_applied": f"{speed}x",
+        "speed_adjusted": False,
+        "rate_applied": "vieneu",
     }

@@ -1,86 +1,81 @@
 import json
-import time
-import azure.cognitiveservices.speech as speechsdk
 import config
 from src.utils import setup_logging
 
 logger = setup_logging("transcriber")
 
 
-def transcribe(audio_path: str, language: str) -> list[dict]:
-    speech_config = speechsdk.SpeechConfig(
-        subscription=config.AZURE_SPEECH_KEY,
-        region=config.AZURE_SPEECH_REGION,
-    )
-    speech_config.speech_recognition_language = language
-    speech_config.request_word_level_timestamps()
-    speech_config.output_format = speechsdk.OutputFormat.Detailed
+def _short_lang(language: str) -> str:
+    """Convert a locale like 'zh-CN'/'en-US'/'ja-JP' to a WhisperX code 'zh'/'en'/'ja'."""
+    return language.split("-")[0].lower()
 
-    audio_config = speechsdk.audio.AudioConfig(filename=audio_path)
-    recognizer = speechsdk.SpeechRecognizer(
-        speech_config=speech_config,
-        audio_config=audio_config,
+
+def transcribe(audio_path: str, language: str) -> list[dict]:
+    """Transcribe audio with WhisperX, returning word-aligned segments.
+
+    Output matches the original Azure contract: a list of
+    {id, text, start, end, duration}. WhisperX gives segment-level text from
+    faster-whisper, then forced phoneme alignment (wav2vec2) refines the
+    start/end to word-level accuracy — which the dubbing timeline relies on.
+    """
+    import whisperx
+
+    lang = _short_lang(language)
+    device = config.WHISPER_DEVICE
+    compute_type = config.WHISPER_COMPUTE_TYPE
+    model_size = config.WHISPER_MODEL
+
+    logger.info(
+        f"Loading WhisperX model '{model_size}' on {device} ({compute_type}), language={lang}"
     )
+    model = whisperx.load_model(model_size, device, compute_type=compute_type, language=lang)
+
+    audio = whisperx.load_audio(audio_path)
+    logger.info(f"Transcribing: {audio_path}")
+    result = model.transcribe(audio, batch_size=16, language=lang)
+    raw_segments = result.get("segments", [])
+    logger.info(f"Transcription complete: {len(raw_segments)} raw segments")
+
+    # Forced alignment for accurate word/segment boundaries. Non-fatal: if the
+    # alignment model is unavailable for this language, fall back to the
+    # faster-whisper segment timestamps.
+    try:
+        align_model, metadata = whisperx.load_align_model(language_code=lang, device=device)
+        result = whisperx.align(
+            raw_segments, align_model, metadata, audio, device,
+            return_char_alignments=False,
+        )
+        raw_segments = result.get("segments", raw_segments)
+        logger.info("Word-level alignment applied")
+    except Exception as e:
+        logger.warning(f"Alignment unavailable for '{lang}' ({e}); using segment-level timestamps")
 
     segments = []
-    done = False
     segment_id = 0
-    errors = []
+    for seg in raw_segments:
+        text = (seg.get("text") or "").strip()
+        start = seg.get("start")
+        end = seg.get("end")
+        if not text or start is None or end is None:
+            continue
+        start = float(start)
+        end = float(end)
+        if end <= start:
+            continue
+        segment_id += 1
+        segments.append({
+            "id": segment_id,
+            "text": text,
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "duration": round(end - start, 3),
+        })
+        logger.info(f"Segment {segment_id}: [{start:.1f}s-{end:.1f}s] {text[:50]}...")
 
-    def on_recognized(evt):
-        nonlocal segment_id
-        result = evt.result
-        if result.reason == speechsdk.ResultReason.RecognizedSpeech and result.text.strip():
-            start = result.offset / 10_000_000
-            duration = result.duration / 10_000_000
-            end = start + duration
-            segment_id += 1
-            segment = {
-                "id": segment_id,
-                "text": result.text,
-                "start": round(start, 3),
-                "end": round(end, 3),
-                "duration": round(duration, 3),
-            }
-            segments.append(segment)
-            logger.info(f"Segment {segment_id}: [{start:.1f}s-{end:.1f}s] {result.text[:50]}...")
+    if not segments:
+        raise RuntimeError("Transcription produced no usable segments")
 
-    def on_canceled(evt):
-        nonlocal done
-        details = evt.result.cancellation_details
-        if details.reason == speechsdk.CancellationReason.EndOfStream:
-            logger.info("Recognition reached end of stream.")
-        elif details.reason == speechsdk.CancellationReason.Error:
-            error_msg = f"ASR error: {details.error_details}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-        else:
-            logger.warning(f"Recognition canceled: {details.reason}")
-        done = True
-
-    def on_session_stopped(evt):
-        nonlocal done
-        logger.info("Recognition session stopped.")
-        done = True
-
-    recognizer.recognized.connect(on_recognized)
-    recognizer.canceled.connect(on_canceled)
-    recognizer.session_stopped.connect(on_session_stopped)
-
-    logger.info(f"Starting transcription: {audio_path} (language: {language})")
-    recognizer.start_continuous_recognition()
-
-    while not done:
-        time.sleep(0.5)
-
-    recognizer.stop_continuous_recognition()
-
-    if errors:
-        raise RuntimeError(f"Transcription failed: {'; '.join(errors)}")
-
-    logger.info(f"Transcription complete: {len(segments)} raw segments")
-
-    # Split long segments into ~MAX_SEGMENT_DURATION chunks
+    # Split long segments into ~max_duration chunks at sentence boundaries
     segments = split_long_segments(segments, max_duration=10.0)
     logger.info(f"After splitting: {len(segments)} segments")
 
